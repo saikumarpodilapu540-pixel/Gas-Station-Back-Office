@@ -2,10 +2,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
+import { canAccessStore } from '../utils/storeAccess';
 
 const router = Router();
 router.use(requireAuth);
-
 const fuelLogSchema = z.object({
   store_id: z.string(),
   fuel_type: z.string(),
@@ -20,6 +20,9 @@ router.post('/', async (req, res) => {
   try {
     const validatedData = fuelLogSchema.parse(req.body);
     const { store_id, fuel_type, gallons_received, date, openingMeter, closingMeter, pricePerGallon } = validatedData;
+    if (!(await canAccessStore((req as any).user.id, store_id))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     
     const result = await prisma.$transaction(async (tx) => {
       // Find relevant tank
@@ -91,6 +94,10 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const storeId = req.query.storeId as string || (req as any).user.storeId;
+    if (!storeId) return res.status(400).json({ error: 'storeId is required' });
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const logs = await prisma.fuelLog.findMany({ where: { storeId }, orderBy: { createdAt: 'desc' }, take: 30 });
     res.json(logs);
   } catch (error) {

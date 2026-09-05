@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
+import { canAccessStore } from '../utils/storeAccess';
 
 const router = Router();
 router.use(requireAuth);
@@ -20,6 +21,9 @@ router.post('/', async (req, res) => {
   try {
     const validatedData = saleSchema.parse(req.body);
     const { storeId, category, paymentType, items } = validatedData;
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
 
     // Calculate total amount and start transaction
     let totalAmount = 0;
@@ -30,15 +34,14 @@ router.post('/', async (req, res) => {
 
       for (const item of items) {
         // Fetch current product
-        const product = await tx.inventory.findUnique({ where: { id: item.productId } });
+        const product = await tx.inventory.findFirst({ where: { id: item.productId, storeId } });
         if (!product) throw new Error(`Product not found: ${item.productId}`);
-        if (product.stockQuantity < item.quantity) throw new Error(`Stock not available for ${product.productName}`);
 
-        // Deduct inventory
-        await tx.inventory.update({
-          where: { id: item.productId },
-          data: { stockQuantity: product.stockQuantity - item.quantity }
+        const inventoryUpdate = await tx.inventory.updateMany({
+          where: { id: item.productId, storeId, stockQuantity: { gte: item.quantity } },
+          data: { stockQuantity: { decrement: item.quantity } }
         });
+        if (inventoryUpdate.count !== 1) throw new Error(`Stock not available for ${product.productName}`);
 
         const lineTotal = Number(product.sellingPrice) * item.quantity;
         totalAmount += lineTotal;
@@ -46,7 +49,8 @@ router.post('/', async (req, res) => {
         saleItemsData.push({
           productId: product.id,
           quantity: item.quantity,
-          price: product.sellingPrice
+          price: product.sellingPrice,
+          cost: product.costPrice
         });
       }
 
@@ -79,9 +83,13 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const storeId = req.query.storeId as string || (req as any).user.storeId;
+    if (!storeId) return res.status(400).json({ error: 'storeId is required' });
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const sales = await prisma.sale.findMany({
       where: { storeId },
-      include: { saleItems: true },
+      include: { saleItems: { include: { product: true } } },
       orderBy: { date: 'desc' },
       take: 50
     });

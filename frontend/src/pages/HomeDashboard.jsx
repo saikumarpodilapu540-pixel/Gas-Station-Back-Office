@@ -9,9 +9,11 @@ import { useData } from '../context/DataContext';
 
 export default function HomeDashboard() {
   const navigate = useNavigate();
-  const { currentUser } = useData();
+  const { currentUser, calculateKPIs } = useData();
 
   const firstName = currentUser?.name?.split(' ')[0] || 'User';
+  const kpis = calculateKPIs();
+  const profitMargin = kpis.revenue > 0 ? (kpis.profit / kpis.revenue) * 100 : 0;
 
   const modules = [
     { 
@@ -21,7 +23,7 @@ export default function HomeDashboard() {
       icon: Droplets, 
       color: 'bg-orange-100 text-orange-600', 
       shadow: 'hover:shadow-orange-500/20',
-      stat: 'Fuel Sold: 1,200 gal'
+      stat: `Fuel Sold: ${kpis.gallons.toLocaleString()} gal`
     },
     { 
       name: 'Inventory', 
@@ -30,7 +32,7 @@ export default function HomeDashboard() {
       icon: Package, 
       color: 'bg-blue-100 text-blue-600',
       shadow: 'hover:shadow-blue-500/20',
-      stat: 'Low Stock: 5 items'
+      stat: `Low Stock: ${kpis.lowStockCount} items`
     },
     { 
       name: 'Sales Terminal', 
@@ -39,7 +41,7 @@ export default function HomeDashboard() {
       icon: ShoppingCart, 
       color: 'bg-emerald-100 text-emerald-600',
       shadow: 'hover:shadow-emerald-500/20',
-      stat: 'Today Sales: $2,450'
+      stat: `Revenue: $${kpis.revenue.toLocaleString()}`
     },
     { 
       name: 'Reports & Analytics', 
@@ -48,7 +50,7 @@ export default function HomeDashboard() {
       icon: BarChart3, 
       color: 'bg-purple-100 text-purple-600',
       shadow: 'hover:shadow-purple-500/20',
-      stat: 'Profit Margin: 24%'
+      stat: `Profit Margin: ${profitMargin.toFixed(1)}%`
     },
     { 
       name: 'Daily Closing', 
@@ -66,7 +68,7 @@ export default function HomeDashboard() {
       icon: Truck, 
       color: 'bg-cyan-100 text-cyan-600',
       shadow: 'hover:shadow-cyan-500/20',
-      stat: 'Active: 12 Vendors'
+      stat: 'Planned for Phase 2'
     },
     { 
       name: 'Employees', 
@@ -75,7 +77,7 @@ export default function HomeDashboard() {
       icon: Users, 
       color: 'bg-pink-100 text-pink-600',
       shadow: 'hover:shadow-pink-500/20',
-      stat: 'On Shift: 3'
+      stat: 'Planned for Phase 2'
     },
     { 
       name: 'POS Integration', 
@@ -84,7 +86,7 @@ export default function HomeDashboard() {
       icon: POSIcon, 
       color: 'bg-teal-100 text-teal-600',
       shadow: 'hover:shadow-teal-500/20',
-      stat: 'Status: Connected'
+      stat: 'Planned for Phase 2'
     },
     { 
       name: 'Audit Logs', 
@@ -93,7 +95,7 @@ export default function HomeDashboard() {
       icon: ShieldAlert, 
       color: 'bg-rose-100 text-rose-600',
       shadow: 'hover:shadow-rose-500/20',
-      stat: '2 Alerts Found'
+      stat: 'Planned for Phase 2'
     },
     { 
       name: 'Settings', 
@@ -138,7 +140,7 @@ export default function HomeDashboard() {
             </div>
             <div>
               <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Today's Revenue</p>
-              <p className="text-xl font-black text-slate-900">$4,850.20</p>
+              <p className="text-xl font-black text-slate-900">${kpis.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
             </div>
           </div>
           <div className="flex items-center gap-4 bg-blue-50 px-5 py-3 rounded-xl border border-blue-100">
@@ -147,7 +149,7 @@ export default function HomeDashboard() {
             </div>
             <div>
               <p className="text-xs font-bold text-blue-600 uppercase tracking-wider">Net Profit</p>
-              <p className="text-xl font-black text-slate-900">$1,240.50</p>
+              <p className="text-xl font-black text-slate-900">${kpis.profit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
             </div>
           </div>
         </div>

@@ -61,7 +61,7 @@ export default function Dashboard() {
           <p className="text-slate-500 font-medium mt-1">Real-time store and fuel performance.</p>
         </div>
         <div className="text-sm font-bold text-slate-700 bg-white px-5 py-2.5 rounded-lg border border-slate-200/60 shadow-sm">
-          April 27, 2026
+          {new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
         </div>
       </div>
 

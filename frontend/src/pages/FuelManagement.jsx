@@ -79,7 +79,6 @@ export default function FuelManagement() {
           const fillPercentage = (tank.current / tank.capacity) * 100;
           const isLow = fillPercentage < 20;
           const profitMargin = ((tank.price - tank.cost) / tank.price * 100).toFixed(1);
-          const profitPerGal = (tank.price - tank.cost).toFixed(2);
 
           return (
             <motion.div 

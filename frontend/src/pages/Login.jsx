@@ -89,6 +89,9 @@ export default function Login() {
             {!isSubmitting && <ArrowRight className="w-5 h-5" />}
           </button>
         </form>
+        <p className="mt-6 text-center text-xs text-slate-500">
+          Local demo: admin@fuelops.com / admin123
+        </p>
       </div>
     </div>
   );
