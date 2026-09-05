@@ -45,7 +45,12 @@ export const socket = io(SOCKET_URL, {
 
 export const authService = {
   login: (credentials) => api.post('/auth/login', credentials),
-  register: (data) => api.post('/auth/register', data)
+  register: (data) => api.post('/auth/register', data),
+  me: () => api.get('/auth/me')
+};
+
+export const storeService = {
+  getStores: () => api.get('/stores')
 };
 
 export const inventoryService = {

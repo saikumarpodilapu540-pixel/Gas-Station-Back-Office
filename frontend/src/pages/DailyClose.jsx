@@ -62,8 +62,9 @@ export default function DailyClose() {
     const newEntry = {
       storeId: activeStoreId,
       date: formData.date,
+      totalSales: calculatedData.totalRevenue,
       totalRevenue: calculatedData.totalRevenue,
-      totalExpenses: calculatedData.totalExpenses,
+      totalExpenses: calculatedData.totalExpenses + formData.cogs,
       netProfit: calculatedData.netProfit,
       highestCategory: calculatedData.highest.name,
       lowestCategory: calculatedData.lowest.name,

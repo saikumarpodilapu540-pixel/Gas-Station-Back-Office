@@ -132,6 +132,7 @@ model SaleItem {
   productId      String
   quantity       Int
   price          Decimal      @db.Decimal(10, 2) // Snapshot of price at time of sale
+  cost           Decimal?     @db.Decimal(10, 2) // Snapshot of cost at time of sale
 
   // Relations
   sale           Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)

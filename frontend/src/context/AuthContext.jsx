@@ -1,60 +1,78 @@
-import { createContext, useContext, useState, useEffect } from 'react';
-import { authService, api, socket } from '../services/api';
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useContext, useEffect, useState } from 'react';
+import { authService, socket } from '../services/api';
 
 const AuthContext = createContext();
+const TOKEN_KEY = 'fuelops_token';
+const USER_KEY = 'fuelops_user';
 
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('fuelops_token') || null);
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(USER_KEY));
+    } catch {
+      return null;
+    }
+  });
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
   const [loading, setLoading] = useState(true);
 
+  const clearSession = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    setToken(null);
+    setUser(null);
+    socket.disconnect();
+  };
+
   useEffect(() => {
-    // If we have a token but no user, we could potentially verify it here
-    // For now, we'll just set a mock user if token exists to bypass full verification in UI
-    if (token) {
-      setUser({ role: 'admin', name: 'Authorized User' });
-      api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      socket.connect();
-    }
-    setLoading(false);
-    
-    return () => {
-      socket.disconnect();
-    }
+    let active = true;
+
+    const restoreSession = async () => {
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const response = await authService.me();
+        if (!active) return;
+        setUser(response.data);
+        localStorage.setItem(USER_KEY, JSON.stringify(response.data));
+        socket.connect();
+      } catch {
+        if (active) clearSession();
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    restoreSession();
+    return () => { active = false; };
   }, [token]);
 
   const login = async (email, password) => {
     try {
       const response = await authService.login({ email, password });
       const { token: newToken, user: userData } = response.data;
-      
-      localStorage.setItem('fuelops_token', newToken);
-      setToken(newToken);
+      localStorage.setItem(TOKEN_KEY, newToken);
+      localStorage.setItem(USER_KEY, JSON.stringify(userData));
       setUser(userData);
-      api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-      
+      setToken(newToken);
+      socket.connect();
       return { success: true };
     } catch (error) {
-      console.error('Login error:', error);
-      return { 
-        success: false, 
-        error: error.response?.data?.error || 'Invalid credentials'
+      return {
+        success: false,
+        error: error.response?.data?.error || 'Unable to sign in'
       };
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('fuelops_token');
-    setToken(null);
-    setUser(null);
-    delete api.defaults.headers.common['Authorization'];
-    socket.disconnect();
-  };
-
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, isAuthenticated: !!token }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout: clearSession, isAuthenticated: Boolean(token && user) }}>
       {!loading && children}
     </AuthContext.Provider>
   );

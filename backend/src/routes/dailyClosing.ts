@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { calculateProfit } from '../utils/businessLogic';
+import { canAccessStore } from '../utils/storeAccess';
 
 const router = Router();
 router.use(requireAuth);
@@ -9,6 +10,10 @@ router.use(requireAuth);
 router.post('/', async (req, res) => {
   try {
     const { storeId, date, totalSales, totalExpenses } = req.body;
+    if (!storeId || !date) return res.status(400).json({ error: 'storeId and date are required' });
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     
     // Dynamic profit calculation
     const netProfit = calculateProfit(Number(totalSales), Number(totalExpenses));
@@ -43,6 +48,10 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const storeId = req.query.storeId as string || (req as any).user.storeId;
+    if (!storeId) return res.status(400).json({ error: 'storeId is required' });
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const closings = await prisma.dailyClosing.findMany({
       where: { storeId },
       orderBy: { date: 'desc' },

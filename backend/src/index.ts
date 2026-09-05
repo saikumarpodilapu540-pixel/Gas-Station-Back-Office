@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -9,6 +10,7 @@ import fuelRoutes from './routes/fuel';
 import dailyClosingRoutes from './routes/dailyClosing';
 import reportRoutes from './routes/reports';
 import posRoutes from './routes/pos';
+import storeRoutes from './routes/stores';
 
 const app = express();
 const server = http.createServer(app);
@@ -18,8 +20,14 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 5001;
 
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET must be configured in production');
+}
+
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:5174', 'http://127.0.0.1:5174'],
+  origin: process.env.FRONTEND_ORIGIN
+    ? process.env.FRONTEND_ORIGIN.split(',').map((origin) => origin.trim())
+    : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:5174', 'http://127.0.0.1:5174'],
   credentials: true
 }));
 app.use(express.json());
@@ -52,6 +60,7 @@ app.get('/api/health', (req, res) => {
 
 // API Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/stores', storeRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/fuel-log', fuelRoutes);

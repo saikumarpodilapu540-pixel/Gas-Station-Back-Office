@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { canAccessStore } from '../utils/storeAccess';
 
 const router = Router();
 router.use(requireAuth);
@@ -22,6 +23,9 @@ router.get('/', async (req, res) => {
   try {
     const storeId = req.query.storeId as string || (req as any).user.storeId;
     if (!storeId) return res.status(400).json({ error: 'storeId is required' });
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
 
     const inventory = await prisma.inventory.findMany({ where: { storeId } });
     res.json(inventory);
@@ -48,6 +52,9 @@ router.post('/', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
     };
 
     const validatedData = inventorySchema.parse(mappedData);
+    if (!(await canAccessStore((req as any).user.id, validatedData.storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const item = await prisma.inventory.create({ data: validatedData });
     
     const io = req.app.get('io');
@@ -92,7 +99,12 @@ router.post('/import-csv', requireRole(['OWNER', 'MANAGER']), async (req, res) =
 router.put('/:id', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
   try {
     const id = req.params.id as string;
-    const validatedData = inventorySchema.partial().parse(req.body);
+    const existing = await prisma.inventory.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'Inventory item not found' });
+    if (!(await canAccessStore((req as any).user.id, existing.storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
+    const validatedData = inventorySchema.omit({ storeId: true }).partial().parse(req.body);
     
     const updated = await prisma.inventory.update({
       where: { id },
@@ -113,6 +125,9 @@ router.delete('/:id', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
     const id = req.params.id as string;
     const item = await prisma.inventory.findUnique({ where: { id } });
     if (item) {
+      if (!(await canAccessStore((req as any).user.id, item.storeId))) {
+        return res.status(403).json({ error: 'You do not have access to this store' });
+      }
       await prisma.inventory.delete({ where: { id } });
       
       const io = req.app.get('io');

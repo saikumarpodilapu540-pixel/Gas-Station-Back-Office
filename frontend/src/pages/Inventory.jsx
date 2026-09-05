@@ -1,13 +1,12 @@
 import { motion } from 'framer-motion';
 import { Package, Search, Plus, Filter, AlertTriangle, Eye, Edit2, Trash2, CheckCircle2, XCircle } from 'lucide-react';
 import { useData } from '../context/DataContext';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { inventoryService } from '../services/api';
 import { DEPARTMENTS, getDepartmentConfig, autoSuggestDepartment } from '../utils/departments';
 
 export default function Inventory() {
-  const { activeStoreId, recordPhysicalCount } = useData();
-  const [inventory, setInventory] = useState([]);
+  const { activeStoreId, inventory, recordPhysicalCount, refreshStoreData } = useData();
   const [search, setSearch] = useState('');
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -24,34 +23,21 @@ export default function Inventory() {
   });
   const [formMessage, setFormMessage] = useState(null);
 
-  const fetchInventory = async () => {
-    if (activeStoreId === 'hq') return;
-    try {
-      const res = await inventoryService.getInventory(activeStoreId);
-      setInventory(res.data);
-      if (res.data.length > 0) {
-        setAudit({ id: res.data[0].id, count: 0 });
-      }
-    } catch (error) {
-      console.error('Failed to fetch inventory', error);
-    }
-  };
-
-  useEffect(() => {
-    fetchInventory();
-  }, [activeStoreId]);
-
   const filtered = inventory.filter(item => 
     (item.productName || item.name || '').toLowerCase().includes(search.toLowerCase()) || 
     (item.sku || '').includes(search)
   );
 
-  const handleAuditSubmit = (e) => {
+  const handleAuditSubmit = async (e) => {
     e.preventDefault();
     if (audit.id && audit.count >= 0) {
-      recordPhysicalCount('inventory', audit.id, parseInt(audit.count));
-      setShowAuditModal(false);
-      setAudit({ ...audit, count: 0 });
+      try {
+        await recordPhysicalCount('inventory', audit.id, parseInt(audit.count, 10));
+        setShowAuditModal(false);
+        setAudit({ ...audit, count: 0 });
+      } catch (error) {
+        alert(error.response?.data?.error || 'Unable to update physical count');
+      }
     }
   };
 
@@ -96,7 +82,7 @@ export default function Inventory() {
       // STEP 4 & 5: Success Response & UI Update
       setFormMessage({ type: 'success', text: 'Product added successfully' });
       setForm({ product_name: '', category: '', cost_price: '', selling_price: '', stock_quantity: '' });
-      fetchInventory();
+      await refreshStoreData(activeStoreId);
       setTimeout(() => {
         setShowAddModal(false);
         setFormMessage(null);
@@ -114,7 +100,7 @@ export default function Inventory() {
     if (window.confirm("Are you sure you want to delete this product?")) {
       try {
         await inventoryService.deleteItem(id);
-        fetchInventory();
+        await refreshStoreData(activeStoreId);
       } catch (error) {
         const errorMsg = error.response?.data?.error || error.message;
         console.error("Failed to delete product", error);
