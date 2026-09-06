@@ -11,6 +11,9 @@ import dailyClosingRoutes from './routes/dailyClosing';
 import reportRoutes from './routes/reports';
 import posRoutes from './routes/pos';
 import storeRoutes from './routes/stores';
+import vendorRoutes from './routes/vendors';
+import employeeRoutes from './routes/employees';
+import auditLogRoutes from './routes/auditLogs';
 
 const app = express();
 const server = http.createServer(app);
@@ -67,6 +70,9 @@ app.use('/api/fuel-log', fuelRoutes);
 app.use('/api/daily-close', dailyClosingRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/pos', posRoutes);
+app.use('/api/vendors', vendorRoutes);
+app.use('/api/employees', employeeRoutes);
+app.use('/api/audit-logs', auditLogRoutes);
 
 server.listen(PORT, () => {
   console.log(`Server & WebSockets running on port ${PORT}`);

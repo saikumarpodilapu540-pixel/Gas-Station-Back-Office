@@ -68,7 +68,7 @@ export default function HomeDashboard() {
       icon: Truck, 
       color: 'bg-cyan-100 text-cyan-600',
       shadow: 'hover:shadow-cyan-500/20',
-      stat: 'Planned for Phase 2'
+      stat: 'Database-backed'
     },
     { 
       name: 'Employees', 
@@ -77,7 +77,7 @@ export default function HomeDashboard() {
       icon: Users, 
       color: 'bg-pink-100 text-pink-600',
       shadow: 'hover:shadow-pink-500/20',
-      stat: 'Planned for Phase 2'
+      stat: 'Database-backed'
     },
     { 
       name: 'POS Integration', 
@@ -86,7 +86,7 @@ export default function HomeDashboard() {
       icon: POSIcon, 
       color: 'bg-teal-100 text-teal-600',
       shadow: 'hover:shadow-teal-500/20',
-      stat: 'Planned for Phase 2'
+      stat: 'CSV/API ready'
     },
     { 
       name: 'Audit Logs', 
@@ -95,7 +95,7 @@ export default function HomeDashboard() {
       icon: ShieldAlert, 
       color: 'bg-rose-100 text-rose-600',
       shadow: 'hover:shadow-rose-500/20',
-      stat: 'Planned for Phase 2'
+      stat: 'Persisted history'
     },
     { 
       name: 'Settings', 

@@ -1,6 +1,6 @@
 # FuelOps Pro: Gas Station Back Office
 
-FuelOps Pro is a full-stack back-office application for gas stations and convenience stores. Phase 1 provides a database-backed path from authentication through inventory, sales, and financial reporting.
+FuelOps Pro is a full-stack back-office application for gas stations and convenience stores. Phase 1 provides the database-backed authentication, inventory, sales, and reporting foundation. Phase 2 completes the day-to-day management workflows on top of that same PostgreSQL/Prisma backend.
 
 ## Phase 1 features
 
@@ -12,6 +12,16 @@ FuelOps Pro is a full-stack back-office application for gas stations and conveni
 - Revenue, cost of goods sold, expenses, and net-profit calculation
 - Socket.IO events that refresh open store screens after sales or inventory changes
 - Repeatable seed data for a local owner, store, and starter products
+
+## Phase 2 features
+
+- Inventory view, edit, delete, search, category filters, stock filters, physical counts, and audit history
+- Persistent vendor CRUD with purchase-history protection
+- Persistent employee CRUD with hashed passwords, role restrictions, shifts, and store authorization
+- Persistent audit-log API used by inventory, vendors, employees, and manual audit actions
+- Seeded fuel tanks, tank audits, delivery capacity checks, and protected fuel updates
+- Report date ranges (today, seven days, thirty days, and all time) with persisted COGS and expense calculations
+- POS connection status, disconnect, correctly shaped CSV imports, store authorization, and oversell protection
 
 ## Technology
 
@@ -85,6 +95,19 @@ npm run lint
 npm run build
 ```
 
+## Database changes after Phase 2
+
+Phase 2 adds the `users.shift` field, fuel pricing fields, and a unique `(storeId, fuelType)` constraint. Because this repository currently uses Prisma `db push` rather than migration files, run these commands after pulling the branch:
+
+```bash
+cd backend
+npm run db:generate
+npm run db:push
+npm run db:seed
+```
+
+`db:push` updates the local PostgreSQL schema without deleting existing data. Review Prisma's confirmation if the database contains conflicting changes.
+
 ## Current scope
 
-Inventory, convenience-store sales, authentication, store selection, dashboards, and reports are included in Phase 1. Fuel workflows, employees, vendors, audit persistence, billing, and production POS-provider integrations remain later-phase work; their existing UI should be treated as preview functionality.
+Authentication, store selection, inventory, convenience-store sales, fuel operations, daily close, reports, employees, vendors, audit logs, and the local POS/CSV workflow are now database-backed. Billing plan buttons are still presentation-only until a payment provider and subscription API are selected. The POS API/SFTP screens provide the local contract and import path; production provider credentials and webhook/SFTP infrastructure still need to be supplied by the deployment.

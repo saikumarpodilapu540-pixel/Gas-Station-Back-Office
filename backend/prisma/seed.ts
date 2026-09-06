@@ -50,6 +50,20 @@ async function main() {
       create: { ...product, storeId: STORE_ID }
     });
   }
+
+  const tanks = [
+    { fuelType: 'Regular', tankCapacity: 10000, currentLevel: 7200, pricePerGallon: 3.49, costPerGallon: 2.85 },
+    { fuelType: 'Premium', tankCapacity: 8000, currentLevel: 5400, pricePerGallon: 3.99, costPerGallon: 3.25 },
+    { fuelType: 'Diesel', tankCapacity: 12000, currentLevel: 8100, pricePerGallon: 3.79, costPerGallon: 3.05 }
+  ];
+
+  for (const tank of tanks) {
+    await prisma.fuelTank.upsert({
+      where: { storeId_fuelType: { storeId: STORE_ID, fuelType: tank.fuelType } },
+      update: tank,
+      create: { storeId: STORE_ID, ...tank }
+    });
+  }
 }
 
 main()

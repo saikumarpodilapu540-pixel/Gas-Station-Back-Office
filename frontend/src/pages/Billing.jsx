@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Check, Zap, Building2, Crown, Shield } from 'lucide-react';
 import { useData } from '../context/DataContext';
 
 export default function Billing() {
   const { subscription } = useData();
+  const [message, setMessage] = useState('');
 
   const plans = [
     {
@@ -38,6 +40,8 @@ export default function Billing() {
         <h2 className="text-3xl font-black text-slate-900 tracking-tight">Billing & Subscriptions</h2>
         <p className="text-slate-500 font-medium mt-3 text-lg">Manage your FuelOps Pro SaaS subscription, upgrade your plan, and unlock multi-store features.</p>
       </div>
+
+      {message && <div className="mx-auto max-w-2xl rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-center text-sm font-medium text-blue-800">{message}</div>}
 
       {/* Current Plan Status */}
       <div className="glass-panel p-8 flex items-center justify-between border-blue-200 shadow-sm bg-blue-50/30">
@@ -97,7 +101,7 @@ export default function Billing() {
                 ))}
               </div>
 
-              <button className={`w-full py-3 rounded-xl font-bold transition-all shadow-sm ${
+              <button onClick={() => setMessage(`${plan.name} checkout is not configured yet. Connect a billing provider before changing subscriptions.`)} className={`w-full py-3 rounded-xl font-bold transition-all shadow-sm ${
                 isCurrent 
                   ? 'bg-slate-100 text-slate-400 cursor-default' 
                   : 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-md'

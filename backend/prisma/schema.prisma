@@ -39,6 +39,7 @@ model User {
   password       String
   role           Role         @default(STAFF)
   storeId        String?
+  shift          String?
   
   // Relations
   store          Store?       @relation("StoreStaff", fields: [storeId], references: [id])
@@ -178,6 +179,8 @@ model FuelTank {
   fuelType       String
   tankCapacity   Decimal      @db.Decimal(10, 2)
   currentLevel   Decimal      @db.Decimal(10, 2)
+  pricePerGallon Decimal      @default(0) @db.Decimal(10, 3)
+  costPerGallon  Decimal      @default(0) @db.Decimal(10, 3)
 
   // Relations
   store          Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
@@ -186,6 +189,7 @@ model FuelTank {
   updatedAt      DateTime     @updatedAt
 
   @@index([storeId])
+  @@unique([storeId, fuelType])
   @@map("fuel_tanks")
 }
 

@@ -14,17 +14,30 @@ router.get('/summary', async (req, res) => {
       return res.status(403).json({ error: 'You do not have access to this store' });
     }
     
+    const range = req.query.range as string | undefined;
+    const now = new Date();
+    const start = new Date(now);
+    if (range === 'today') {
+      start.setHours(0, 0, 0, 0);
+    } else if (range === '7d') {
+      start.setDate(start.getDate() - 6);
+      start.setHours(0, 0, 0, 0);
+    } else if (range === '30d') {
+      start.setDate(start.getDate() - 29);
+      start.setHours(0, 0, 0, 0);
+    }
+    const dateFilter = range && range !== 'all' ? { gte: start, lte: now } : undefined;
     const [sales, expenses, fuelLogs, lowStockItems] = await Promise.all([
       prisma.sale.findMany({
-        where: { storeId },
+        where: { storeId, ...(dateFilter ? { date: dateFilter } : {}) },
         include: { saleItems: { include: { product: true } } }
       }),
       prisma.expense.aggregate({
-        where: { storeId },
+        where: { storeId, ...(dateFilter ? { date: dateFilter } : {}) },
         _sum: { amount: true }
       }),
       prisma.fuelLog.aggregate({
-        where: { storeId },
+        where: { storeId, ...(dateFilter ? { date: dateFilter } : {}) },
         _sum: { gallonsSold: true }
       }),
       prisma.inventory.findMany({ where: { storeId } })
@@ -57,6 +70,7 @@ router.get('/summary', async (req, res) => {
       netProfit,
       gallonsSold: Number(fuelLogs._sum.gallonsSold || 0),
       lowStockCount: lowStockItems.filter((item) => item.stockQuantity <= item.reorderLevel).length,
+      range: range || 'all',
       departmentSales: Array.from(departments, ([name, values]) => ({ name, ...values }))
     });
   } catch (error) {

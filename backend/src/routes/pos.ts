@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { canAccessStore } from '../utils/storeAccess';
 
 const router = Router();
 router.use(requireAuth);
@@ -16,6 +17,9 @@ const connectSchema = z.object({
 router.post('/connect', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
   try {
     const { storeId, provider, apiKey } = connectSchema.parse(req.body);
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
 
     const integration = await prisma.posIntegration.upsert({
       where: { storeId },
@@ -23,25 +27,42 @@ router.post('/connect', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
       create: { storeId, provider, apiKey, status: 'ACTIVE' }
     });
 
-    res.json({ message: 'POS connected successfully', integration });
+    const { apiKey: _apiKey, ...safeIntegration } = integration;
+    res.json({ message: 'POS connected successfully', integration: safeIntegration });
   } catch (error: any) {
     res.status(400).json({ error: error.errors || 'Failed to connect POS' });
   }
 });
 
 // Check Status
-router.get('/status', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
+router.get('/status', async (req, res) => {
   try {
     const storeId = req.query.storeId as string || (req as any).user.storeId;
+    if (!storeId || !(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const integration = await prisma.posIntegration.findUnique({ where: { storeId } });
     
-    if (!integration) return res.json({ connected: false });
+    if (!integration || integration.status !== 'ACTIVE') return res.json({ connected: false });
     
     // Mask API key for security
     const { apiKey, ...safeData } = integration;
     res.json({ connected: true, integration: safeData });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch POS status' });
+  }
+});
+
+router.post('/disconnect', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
+  try {
+    const storeId = req.body.storeId || (req as any).user.storeId;
+    if (!storeId || !(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
+    await prisma.posIntegration.update({ where: { storeId }, data: { status: 'INACTIVE' } });
+    res.json({ connected: false });
+  } catch (error: any) {
+    res.status(error?.code === 'P2025' ? 404 : 400).json({ error: 'No POS integration found for this store' });
   }
 });
 
@@ -53,16 +74,19 @@ const syncSchema = z.object({
     paymentType: z.enum(['CASH', 'CREDIT', 'DEBIT', 'EBT', 'OTHER']),
     items: z.array(z.object({
       sku: z.string(),
-      quantity: z.number().positive(),
+      quantity: z.number().int().positive(),
       price: z.number().nonnegative()
     }))
-  }))
+  })).default([])
 });
 
 // Manual Sync or Webhook endpoint
 router.post('/sync', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
   try {
     const { storeId, transactions } = syncSchema.parse(req.body);
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
 
     const integration = await prisma.posIntegration.findUnique({ where: { storeId } });
     if (!integration || integration.status !== 'ACTIVE') {
@@ -98,10 +122,11 @@ router.post('/sync', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
           }
 
           // 4. Reduce inventory
-          await tx.inventory.update({
-            where: { id: product.id },
-            data: { stockQuantity: product.stockQuantity - item.quantity }
+          const stockUpdate = await tx.inventory.updateMany({
+            where: { id: product.id, stockQuantity: { gte: item.quantity } },
+            data: { stockQuantity: { decrement: item.quantity } }
           });
+          if (stockUpdate.count !== 1) throw new Error(`Insufficient stock for SKU ${item.sku}`);
 
           const lineTotal = item.price * item.quantity;
           totalAmount += lineTotal;
@@ -109,7 +134,8 @@ router.post('/sync', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
           saleItemsData.push({
             productId: product.id,
             quantity: item.quantity,
-            price: item.price
+            price: item.price,
+            cost: product.costPrice
           });
         }
 
@@ -199,7 +225,7 @@ const csvSchema = z.object({
   filename: z.string().optional(), // Track filename to prevent duplicates
   rows: z.array(z.object({
     productName: z.string(),
-    quantity: z.number().nonnegative(),
+    quantity: z.number().int().positive(),
     price: z.number().nonnegative()
   }))
 });
@@ -207,6 +233,9 @@ const csvSchema = z.object({
 router.post('/import-csv', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
   try {
     const { storeId, date, filename, rows } = csvSchema.parse(req.body);
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const targetDate = new Date(date);
     
     // Check for duplicate file import
@@ -255,10 +284,13 @@ router.post('/import-csv', requireRole(['OWNER', 'MANAGER']), async (req, res) =
 
         if (match) {
           // Update inventory
-          await tx.inventory.update({
-            where: { id: match.id },
-            data: { stockQuantity: match.stockQuantity - row.quantity }
+          const stockUpdate = await tx.inventory.updateMany({
+            where: { id: match.id, stockQuantity: { gte: row.quantity } },
+            data: { stockQuantity: { decrement: row.quantity } }
           });
+          if (stockUpdate.count !== 1) {
+            throw new Error(`Insufficient stock for ${row.productName}`);
+          }
 
           const lineTotal = row.price * row.quantity;
           totalSalesAmt += lineTotal;
@@ -266,7 +298,8 @@ router.post('/import-csv', requireRole(['OWNER', 'MANAGER']), async (req, res) =
           saleItemsData.push({
             productId: match.id,
             quantity: row.quantity,
-            price: row.price
+            price: row.price,
+            cost: match.costPrice
           });
 
           matchedCount++;
@@ -355,6 +388,9 @@ router.post('/import-csv', requireRole(['OWNER', 'MANAGER']), async (req, res) =
 router.post('/auto-scan', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
   try {
     const storeId = req.body.storeId || (req as any).user.storeId;
+    if (!storeId || !(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const simulatedFilename = `sftp_report_${new Date().toISOString().split('T')[0]}.csv`;
     
     // Check if already processed
@@ -386,15 +422,17 @@ router.post('/auto-scan', requireRole(['OWNER', 'MANAGER']), async (req, res) =>
         const lineTotal = Number(item.sellingPrice) * qty;
         totalAmount += lineTotal;
 
-        await tx.inventory.update({
-          where: { id: item.id },
-          data: { stockQuantity: item.stockQuantity - qty }
+        const stockUpdate = await tx.inventory.updateMany({
+          where: { id: item.id, stockQuantity: { gte: qty } },
+          data: { stockQuantity: { decrement: qty } }
         });
+        if (stockUpdate.count !== 1) throw new Error(`Insufficient stock for ${item.productName}`);
 
         saleItemsData.push({
           productId: item.id,
           quantity: qty,
-          price: item.sellingPrice
+          price: item.sellingPrice,
+          cost: item.costPrice
         });
       }
 
@@ -433,6 +471,9 @@ router.post('/auto-scan', requireRole(['OWNER', 'MANAGER']), async (req, res) =>
 router.get('/mappings', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
   try {
     const storeId = req.query.storeId as string || (req as any).user.storeId;
+    if (!storeId || !(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
     const mappings = await prisma.posItemMapping.findMany({
       where: { storeId },
       include: { inventory: true }
@@ -452,6 +493,11 @@ router.post('/mappings', requireRole(['OWNER', 'MANAGER']), async (req, res) => 
       inventoryId: z.string().uuid()
     });
     const { storeId, posItemName, inventoryId } = schema.parse(req.body);
+    if (!(await canAccessStore((req as any).user.id, storeId))) {
+      return res.status(403).json({ error: 'You do not have access to this store' });
+    }
+    const inventory = await prisma.inventory.findFirst({ where: { id: inventoryId, storeId } });
+    if (!inventory) return res.status(400).json({ error: 'Inventory item does not belong to this store' });
 
     const mapping = await prisma.posItemMapping.upsert({
       where: { storeId_posItemName: { storeId, posItemName } },

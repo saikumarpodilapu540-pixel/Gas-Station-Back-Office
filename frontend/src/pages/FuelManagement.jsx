@@ -11,6 +11,16 @@ export default function FuelManagement() {
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [audit, setAudit] = useState({ id: fuelTanks[0]?.id || '', gallons: 0 });
 
+  const openDeliveryModal = () => {
+    setDelivery((current) => ({ ...current, id: current.id || fuelTanks[0]?.id || '' }));
+    setShowDeliveryModal(true);
+  };
+
+  const openAuditModal = () => {
+    setAudit((current) => ({ ...current, id: current.id || fuelTanks[0]?.id || '' }));
+    setShowAuditModal(true);
+  };
+
   const handleDeliverySubmit = async (e) => {
     e.preventDefault();
     if (delivery.id && delivery.gallons > 0) {
@@ -25,7 +35,7 @@ export default function FuelManagement() {
           date: new Date().toISOString()
         });
         
-        addFuelDelivery(parseInt(delivery.id), parseFloat(delivery.gallons));
+        await addFuelDelivery();
         setShowDeliveryModal(false);
         setDelivery({ ...delivery, gallons: 1000 });
         alert("Fuel delivery recorded successfully!");
@@ -37,12 +47,16 @@ export default function FuelManagement() {
     }
   };
 
-  const handleAuditSubmit = (e) => {
+  const handleAuditSubmit = async (e) => {
     e.preventDefault();
     if (audit.id && audit.gallons >= 0) {
-      recordPhysicalCount('fuel', parseInt(audit.id), parseFloat(audit.gallons));
-      setShowAuditModal(false);
-      setAudit({ ...audit, gallons: 0 });
+      try {
+        await recordPhysicalCount('fuel', audit.id, parseFloat(audit.gallons));
+        setShowAuditModal(false);
+        setAudit({ ...audit, gallons: 0 });
+      } catch (error) {
+        alert(error.response?.data?.error || error.message || 'Unable to save tank audit.');
+      }
     }
   };
 
@@ -60,13 +74,13 @@ export default function FuelManagement() {
         </div>
         <div className="flex gap-3">
           <button 
-            onClick={() => setShowAuditModal(true)}
+            onClick={openAuditModal}
             className="btn-secondary flex items-center gap-2 bg-white text-rose-600 border-rose-200 hover:bg-rose-50"
           >
             <AlertTriangle className="w-4 h-4" /> Tank Audit
           </button>
           <button 
-            onClick={() => setShowDeliveryModal(true)}
+            onClick={openDeliveryModal}
             className="btn-primary flex items-center gap-2"
           >
             <Truck className="w-4 h-4" /> Receive Fuel

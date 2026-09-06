@@ -55,6 +55,7 @@ export const storeService = {
 
 export const inventoryService = {
   getInventory: (storeId) => api.get(`/inventory?storeId=${storeId}`),
+  getItem: (id) => api.get(`/inventory/${id}`),
   createItem: (data) => api.post('/inventory', data),
   updateItem: (id, data) => api.put(`/inventory/${id}`, data),
   deleteItem: (id) => api.delete(`/inventory/${id}`),
@@ -68,11 +69,13 @@ export const salesService = {
 
 export const fuelService = {
   recordLog: (data) => api.post('/fuel-log', data),
-  getLogs: (storeId) => api.get(`/fuel-log?storeId=${storeId}`)
+  getLogs: (storeId) => api.get(`/fuel-log?storeId=${storeId}`),
+  getTanks: (storeId) => api.get(`/fuel-log/tanks?storeId=${storeId}`),
+  updateTank: (id, data) => api.put(`/fuel-log/tanks/${id}`, data)
 };
 
 export const reportsService = {
-  getSummary: (storeId) => api.get(`/reports/summary?storeId=${storeId}`)
+  getSummary: (storeId, range = 'all') => api.get(`/reports/summary?storeId=${storeId}&range=${range}`)
 };
 
 export const dailyCloseService = {
@@ -83,9 +86,30 @@ export const dailyCloseService = {
 export const posService = {
   connect: (data) => api.post('/pos/connect', data),
   getStatus: (storeId) => api.get(`/pos/status?storeId=${storeId}`),
+  disconnect: (storeId) => api.post('/pos/disconnect', { storeId }),
   sync: (data) => api.post('/pos/sync', data),
   importCsv: (data) => api.post('/pos/import-csv', data),
   autoScan: (data) => api.post('/pos/auto-scan', data),
   saveMapping: (data) => api.post('/pos/mappings', data),
   getMappings: (storeId) => api.get(`/pos/mappings?storeId=${storeId}`)
+};
+
+export const vendorService = {
+  getAll: () => api.get('/vendors'),
+  getById: (id) => api.get(`/vendors/${id}`),
+  create: (data) => api.post('/vendors', data),
+  update: (id, data) => api.put(`/vendors/${id}`, data),
+  remove: (id, storeId) => api.delete(`/vendors/${id}${storeId ? `?storeId=${storeId}` : ''}`)
+};
+
+export const employeeService = {
+  getAll: (storeId) => api.get(`/employees?storeId=${storeId}`),
+  create: (data) => api.post('/employees', data),
+  update: (id, data) => api.put(`/employees/${id}`, data),
+  remove: (id) => api.delete(`/employees/${id}`)
+};
+
+export const auditService = {
+  getAll: (storeId) => api.get(`/audit-logs?storeId=${storeId}`),
+  create: (data) => api.post('/audit-logs', data)
 };

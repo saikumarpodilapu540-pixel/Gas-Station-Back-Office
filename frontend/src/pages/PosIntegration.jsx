@@ -23,9 +23,18 @@ export default function PosIntegration() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    if (activeStoreId === 'hq') return;
+    if (!activeStoreId || activeStoreId === 'hq') return undefined;
+    let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setStatus({ connected: false });
+    setStatus(null);
+    posService.getStatus(activeStoreId)
+      .then((response) => {
+        if (!cancelled) setStatus(response.data);
+      })
+      .catch(() => {
+        if (!cancelled) setStatus({ connected: false });
+      });
+    return () => { cancelled = true; };
   }, [activeStoreId]);
 
   const handleConnect = async (e) => {
@@ -118,9 +127,14 @@ export default function PosIntegration() {
         setMessage(`Successfully imported ${csvData.length} catalog items into inventory.`);
         setLastImport({ file: csvFile?.name || 'catalog.csv', processed: csvData.length, errors: 0 });
       } else {
-        const res = await posService.importCsv({ storeId: activeStoreId, items: csvData });
-        const simulatedUnmatched = res.data?.unmatched || [];
-        const processedCount = res.data?.processed || csvData.length - simulatedUnmatched.length;
+        const res = await posService.importCsv({
+          storeId: activeStoreId,
+          date: `${csvDate}T00:00:00.000Z`,
+          filename: csvFile?.name,
+          rows: csvData
+        });
+        const simulatedUnmatched = res.data?.unmatchedItems || [];
+        const processedCount = res.data?.matchedCount ?? csvData.length - simulatedUnmatched.length;
         
         if (simulatedUnmatched.length > 0) {
           setMessage(`Partial import complete. Matched ${processedCount} items. ${simulatedUnmatched.length} items need manual mapping.`);
@@ -303,8 +317,20 @@ export default function PosIntegration() {
                       {syncing ? 'Syncing...' : 'Force Manual Sync'}
                     </button>
                     
-                    <button 
-                      onClick={() => setStatus({ connected: false })}
+                    <button
+                      onClick={async () => {
+                        setLoading(true);
+                        try {
+                          await posService.disconnect(activeStoreId);
+                          setStatus({ connected: false });
+                          setMessage('POS disconnected.');
+                        } catch (error) {
+                          setMessage(`Failed to disconnect POS: ${error.response?.data?.error || error.message}`);
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                      disabled={loading}
                       className="px-6 py-3 border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-xl font-bold transition-all"
                     >
                       Disconnect

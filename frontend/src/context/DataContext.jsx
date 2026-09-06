@@ -1,7 +1,18 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { dailyCloseService, inventoryService, reportsService, salesService, socket } from '../services/api';
+import {
+  auditService,
+  dailyCloseService,
+  employeeService,
+  fuelService,
+  inventoryService,
+  reportsService,
+  salesService,
+  socket,
+  vendorService
+} from '../services/api';
 import { useAuth } from './AuthContext';
+import { getDepartmentConfig } from '../utils/departments';
 
 const DataContext = createContext();
 
@@ -39,6 +50,14 @@ const toSaleView = (sale) => ({
   }))
 });
 
+const toTankView = (tank) => ({
+  ...tank,
+  current: Number(tank.current ?? tank.currentLevel ?? 0),
+  capacity: Number(tank.capacity ?? tank.tankCapacity ?? 0),
+  price: Number(tank.price ?? tank.pricePerGallon ?? 0),
+  cost: Number(tank.cost ?? tank.costPerGallon ?? 0)
+});
+
 export const DataProvider = ({ children }) => {
   const { user } = useAuth();
   const stores = useMemo(() => user?.stores || [], [user?.stores]);
@@ -58,40 +77,58 @@ export const DataProvider = ({ children }) => {
   const [vendors, setVendors] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [shrinkageLogs, setShrinkageLogs] = useState([]);
+  const [fuelTanks, setFuelTanks] = useState([]);
+  const [fuelLogs, setFuelLogs] = useState([]);
 
   const refreshStoreData = useCallback(async (storeId) => {
     if (!storeId || storeId === 'hq') return;
     setDataLoading(true);
     setDataError('');
     try {
-      const [inventoryResponse, salesResponse, reportResponse, closingsResponse] = await Promise.all([
+      const [inventoryResponse, salesResponse, reportResponse, closingsResponse, tankResponse, fuelLogResponse, vendorResponse, employeeResponse, auditResponse] = await Promise.all([
         inventoryService.getInventory(storeId),
         salesService.getSales(storeId),
-        reportsService.getSummary(storeId),
-        dailyCloseService.getClosings(storeId)
+        reportsService.getSummary(storeId, reportDateRange),
+        dailyCloseService.getClosings(storeId),
+        fuelService.getTanks(storeId),
+        fuelService.getLogs(storeId),
+        vendorService.getAll(),
+        employeeService.getAll(storeId),
+        auditService.getAll(storeId)
       ]);
       setInventory(inventoryResponse.data.map(toInventoryView));
       setSalesLog(salesResponse.data.map(toSaleView));
       setReport(reportResponse.data);
       setDailyHistory(closingsResponse.data.map((closing) => ({
         ...closing,
+        date: closing.date?.split('T')[0],
         totalRevenue: Number(closing.totalSales),
         totalExpenses: Number(closing.totalExpenses),
         netProfit: Number(closing.netProfit)
+      })));
+      setFuelTanks(tankResponse.data.map(toTankView));
+      setFuelLogs(fuelLogResponse.data);
+      setVendors(vendorResponse.data);
+      setEmployees(employeeResponse.data);
+      setAuditLogs(auditResponse.data.map((log) => ({
+        ...log,
+        user: log.user || 'System',
+        oldValue: log.oldValue ?? 'None',
+        newValue: log.newValue ?? 'None'
       })));
     } catch (error) {
       setDataError(error.response?.data?.error || 'Unable to load store data');
     } finally {
       setDataLoading(false);
     }
-  }, []);
+  }, [reportDateRange]);
 
   useEffect(() => {
     if (!activeStoreId) return;
     if (activeStoreId === 'hq') {
       Promise.all(stores.map(async (store) => ({
         store,
-        report: (await reportsService.getSummary(store.id)).data
+        report: (await reportsService.getSummary(store.id, reportDateRange)).data
       }))).then(setHqReports).catch(() => setDataError('Unable to load company totals'));
       return;
     }
@@ -100,7 +137,7 @@ export const DataProvider = ({ children }) => {
       socket.emit('join_store', activeStoreId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [activeStoreId, refreshStoreData, stores]);
+  }, [activeStoreId, refreshStoreData, reportDateRange, stores]);
 
   useEffect(() => {
     const refresh = (payload) => {
@@ -126,6 +163,11 @@ export const DataProvider = ({ children }) => {
   };
 
   const recordPhysicalCount = async (type, itemId, actualCount) => {
+    if (type === 'fuel') {
+      await fuelService.updateTank(itemId, { currentLevel: Number(actualCount) });
+      await refreshStoreData(activeStoreId);
+      return;
+    }
     if (type !== 'inventory') return;
     const existing = inventory.find((item) => item.id === itemId);
     await inventoryService.updateItem(itemId, { stockQuantity: Number(actualCount) });
@@ -139,11 +181,39 @@ export const DataProvider = ({ children }) => {
     await refreshStoreData(activeStoreId);
   };
 
-  const addAuditLog = (actor, action, module, oldValue, newValue) => {
-    setAuditLogs((logs) => [{
-      id: Date.now(), user: actor, action, module, oldValue: String(oldValue),
-      newValue: String(newValue), timestamp: new Date().toISOString()
-    }, ...logs]);
+  const adjustInventoryStock = async (itemId, delta) => {
+    const existing = inventory.find((item) => item.id === itemId);
+    if (!existing) throw new Error('Inventory item not found');
+    const nextStock = Number(existing.stock) + Number(delta);
+    if (!Number.isInteger(nextStock) || nextStock < 0) throw new Error('Inventory cannot be negative');
+    await inventoryService.updateItem(itemId, { stockQuantity: nextStock });
+    await refreshStoreData(activeStoreId);
+    return nextStock;
+  };
+
+  const addAuditLog = async (actor, action, module, oldValue, newValue) => {
+    if (!activeStoreId || activeStoreId === 'hq') return;
+    try {
+      const response = await auditService.create({
+        storeId: activeStoreId,
+        action,
+        module,
+        oldValue: oldValue === 'None' ? null : String(oldValue),
+        newValue: newValue === 'None' ? null : String(newValue)
+      });
+      setAuditLogs((logs) => [{
+        ...response.data,
+        user: user?.name || actor,
+        oldValue: response.data.oldValue ?? 'None',
+        newValue: response.data.newValue ?? 'None'
+      }, ...logs]);
+    } catch (error) {
+      setDataError(error.response?.data?.error || 'Unable to save audit log');
+    }
+  };
+
+  const addFuelDelivery = async () => {
+    await refreshStoreData(activeStoreId);
   };
 
   const calculateKPIs = () => ({
@@ -171,6 +241,14 @@ export const DataProvider = ({ children }) => {
     margin: Number(department.revenue) > 0 ? Number(department.profit) / Number(department.revenue) * 100 : 0
   })).sort((a, b) => b.revenue - a.revenue), [report]);
 
+  const taxByDept = useMemo(() => {
+    const breakdown = deptSales.map((department) => {
+      const tax = department.revenue * (getDepartmentConfig(department.name).taxRate || 0);
+      return { name: department.name, value: tax };
+    }).filter((department) => department.value > 0);
+    return { breakdown, total: breakdown.reduce((sum, department) => sum + department.value, 0) };
+  }, [deptSales]);
+
   const getSmartInsights = () => {
     if (!deptSales.length) return [{ id: 'empty', type: 'warning', text: 'Record a sale to generate store insights.' }];
     const highestMargin = [...deptSales].sort((a, b) => b.margin - a.margin)[0];
@@ -192,10 +270,10 @@ export const DataProvider = ({ children }) => {
       activeStoreId, setActiveStoreId, reportDateRange, setReportDateRange,
       inventory, setInventory, salesLog, dailyHistory, setDailyHistory,
       employees, setEmployees, vendors, setVendors, auditLogs, shrinkageLogs,
-      dataLoading, dataError, refreshStoreData, recordStoreSale, recordPhysicalCount,
+      dataLoading, dataError, refreshStoreData, recordStoreSale, recordPhysicalCount, adjustInventoryStock,
       addAuditLog, calculateKPIs, getHQStats, deptSales,
-      taxByDept: { breakdown: [], total: 0 }, getSmartInsights, hourlyTrends,
-      fuelTanks: [], setFuelTanks: () => {}, recordFuelSale: async () => {}, addFuelDelivery: async () => {}
+      taxByDept, getSmartInsights, hourlyTrends,
+      fuelTanks, setFuelTanks, fuelLogs, recordFuelSale: async () => {}, addFuelDelivery
     }}>
       {children}
     </DataContext.Provider>

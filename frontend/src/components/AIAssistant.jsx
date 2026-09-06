@@ -12,7 +12,7 @@ export default function AIAssistant() {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
   
-  const { calculateKPIs, deptSales, inventory, setInventory, getSmartInsights } = useData();
+  const { calculateKPIs, deptSales, inventory, adjustInventoryStock, getSmartInsights } = useData();
   const navigate = useNavigate();
 
   const scrollToBottom = () => {
@@ -32,13 +32,13 @@ export default function AIAssistant() {
     setInput('');
 
     // Process intent
-    setTimeout(() => {
-      const response = generateAIResponse(userMsg);
+    setTimeout(async () => {
+      const response = await generateAIResponse(userMsg);
       setMessages(prev => [...prev, { id: Date.now() + 1, type: 'ai', text: response }]);
     }, 600);
   };
 
-  const generateAIResponse = (rawQuery) => {
+  const generateAIResponse = async (rawQuery) => {
     const query = rawQuery.toLowerCase();
 
     // Action: Add to inventory
@@ -49,10 +49,12 @@ export default function AIAssistant() {
       
       const found = inventory.find(i => i.name.toLowerCase().includes(itemName));
       if (found) {
-        setInventory(prev => prev.map(item => 
-          item.id === found.id ? { ...item, stock: item.stock + qty } : item
-        ));
-        return `✅ I've added ${qty} to your ${found.name} inventory. New stock level is ${found.stock + qty}.`;
+        try {
+          const nextStock = await adjustInventoryStock(found.id, qty);
+          return `✅ I've added ${qty} to your ${found.name} inventory. New stock level is ${nextStock}.`;
+        } catch (error) {
+          return `I couldn't update ${found.name}: ${error.message}.`;
+        }
       } else {
         return `I couldn't find "${itemName}" in your inventory to add stock to.`;
       }

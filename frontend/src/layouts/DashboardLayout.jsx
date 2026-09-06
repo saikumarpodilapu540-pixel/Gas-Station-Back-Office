@@ -20,7 +20,7 @@ const navItems = [
 ];
 
 export default function DashboardLayout() {
-  const { stores, activeStoreId, setActiveStoreId } = useData();
+  const { stores, activeStoreId, setActiveStoreId, dataError, dataLoading } = useData();
   const { user, logout } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -165,6 +165,12 @@ export default function DashboardLayout() {
         {/* Content Viewport */}
         <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
           <div className="max-w-7xl mx-auto">
+            {dataError && (
+              <div className="mb-6 flex items-center justify-between gap-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                <span>{dataError}</span>
+                {dataLoading && <span className="text-xs uppercase tracking-wide">Retrying…</span>}
+              </div>
+            )}
             <Outlet />
           </div>
         </main>
