@@ -23,6 +23,15 @@ FuelOps Pro is a full-stack back-office application for gas stations and conveni
 - Report date ranges (today, seven days, thirty days, and all time) with persisted COGS and expense calculations
 - POS connection status, disconnect, correctly shaped CSV imports, store authorization, and oversell protection
 
+## Phase 3 features
+
+- A shared product catalog with store-level inventory, package definitions, barcodes, backroom/shelf balances, reservations, and an append-only stock movement ledger
+- Safe pack/case/loose-unit conversions, physical counts, idempotent adjustments, and stock version checks to prevent lost updates
+- Owner-to-owner store transfers with cost-price receipts, dispatch/receive/return/damage states, PDF receipts with QR references, and check settlement tracking
+- Supplier invoice inbox that stores the original PDF/photo, supports reviewed extraction when an OpenAI Responses API key is configured, and posts approved landed cost into inventory
+- Time-zone-aware reporting, daily close protections, expense corrections, and a grounded assistant that reads current database values for stock, packs, fuel, profit, transfers, and checks
+- Seeded example products across grocery, beverages, beer, hot food, prepared food, and energy drinks in two stores; rerunning the seed preserves existing balances
+
 ## Technology
 
 - Frontend: React 19, Vite 8, React Router, Tailwind CSS, Axios, Recharts
@@ -36,7 +45,7 @@ This is an npm project; it does not use Maven.
 
 - Node.js 20.19+ (or 22.12+)
 - npm
-- Docker Desktop, or a local PostgreSQL 15 installation
+- Docker Desktop, or a local PostgreSQL 15+ installation (PostgreSQL 16 is supported)
 
 ## Start PostgreSQL
 
@@ -56,7 +65,7 @@ cd backend
 cp .env.example .env
 npm ci
 npm run db:generate
-npm run db:push
+npm run db:migrate
 npm run db:seed
 npm run dev
 ```
@@ -97,16 +106,9 @@ npm run build
 
 ## Database changes after Phase 2
 
-Phase 2 adds the `users.shift` field, fuel pricing fields, and a unique `(storeId, fuelType)` constraint. Because this repository currently uses Prisma `db push` rather than migration files, run these commands after pulling the branch:
+Phase 3 introduces migration files. A fresh database should use `npm run db:migrate`; an existing database that was created by the Phase 2 `db:push` flow must first be backed up and marked as having the baseline migration applied. The exact commands, including the Homebrew PostgreSQL setup, are in [`docs/PHASE3_SETUP.md`](docs/PHASE3_SETUP.md).
 
-```bash
-cd backend
-npm run db:generate
-npm run db:push
-npm run db:seed
-```
-
-`db:push` updates the local PostgreSQL schema without deleting existing data. Review Prisma's confirmation if the database contains conflicting changes.
+Do not run `db:push` against a production database. Keep `db:push` for a disposable local database only; deploy the checked-in migrations everywhere else.
 
 ## Current scope
 

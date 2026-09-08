@@ -31,7 +31,13 @@ const toInventoryView = (item) => ({
   stock: item.stockQuantity,
   stockQuantity: item.stockQuantity,
   lowStockAlert: item.reorderLevel,
-  reorderLevel: item.reorderLevel
+  reorderLevel: item.reorderLevel,
+  availableQuantity: item.availableQuantity ?? item.stockQuantity,
+  reservedQuantity: item.reservedQuantity ?? 0,
+  version: item.version ?? 0,
+  catalogId: item.catalogId,
+  catalog: item.catalog,
+  balances: item.balances || []
 });
 
 const toSaleView = (sale) => ({
@@ -156,13 +162,13 @@ export const DataProvider = ({ children }) => {
       storeId: activeStoreId,
       category: 'store',
       paymentType,
-      items: items.map((item) => ({ productId: item.id, quantity: Number(item.qty) }))
+      items: items.map((item) => ({ productId: item.id, packageId: item.packageId, location: item.location || 'BACKROOM', quantity: Number(item.qty) }))
     });
     await refreshStoreData(activeStoreId);
     return response.data;
   };
 
-  const recordPhysicalCount = async (type, itemId, actualCount) => {
+  const recordPhysicalCount = async (type, itemId, actualCount, packageId, location = 'BACKROOM') => {
     if (type === 'fuel') {
       await fuelService.updateTank(itemId, { currentLevel: Number(actualCount) });
       await refreshStoreData(activeStoreId);
@@ -170,8 +176,14 @@ export const DataProvider = ({ children }) => {
     }
     if (type !== 'inventory') return;
     const existing = inventory.find((item) => item.id === itemId);
-    await inventoryService.updateItem(itemId, { stockQuantity: Number(actualCount) });
-    if (existing && Number(actualCount) < existing.stock) {
+    const pack = existing?.catalog?.packages?.find((candidate) => candidate.id === packageId)
+      || existing?.catalog?.packages?.find((candidate) => candidate.unitsPerPackage === 1);
+    if (!pack) throw new Error('This product has no package definition.');
+    await inventoryService.stockAction(itemId, {
+      kind: 'COUNT', packageId: pack.id, location, quantity: Number(actualCount), expectedVersion: existing.version,
+      reason: 'Physical count reconciliation'
+    }, `physical-count-${itemId}-${existing.version}-${Date.now()}`);
+    if (existing && pack.unitsPerPackage === 1 && Number(actualCount) < existing.stock) {
       setShrinkageLogs((logs) => [{
         id: Date.now(), name: existing.name, expected: existing.stock, actual: Number(actualCount),
         lossQty: existing.stock - Number(actualCount),
@@ -186,7 +198,12 @@ export const DataProvider = ({ children }) => {
     if (!existing) throw new Error('Inventory item not found');
     const nextStock = Number(existing.stock) + Number(delta);
     if (!Number.isInteger(nextStock) || nextStock < 0) throw new Error('Inventory cannot be negative');
-    await inventoryService.updateItem(itemId, { stockQuantity: nextStock });
+    const each = existing.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1);
+    if (!each) throw new Error('This product has no individual package definition.');
+    await inventoryService.stockAction(itemId, {
+      kind: 'ADJUST', packageId: each.id, location: 'BACKROOM', quantity: Number(delta),
+      reason: 'Manual stock adjustment'
+    }, `stock-adjust-${itemId}-${Date.now()}`);
     await refreshStoreData(activeStoreId);
     return nextStock;
   };

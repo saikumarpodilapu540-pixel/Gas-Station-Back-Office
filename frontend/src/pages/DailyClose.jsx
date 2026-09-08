@@ -59,20 +59,18 @@ export default function DailyClose() {
   }, [formData]);
 
   const handleSaveClose = async () => {
-    const newEntry = {
-      storeId: activeStoreId,
-      date: formData.date,
-      totalSales: calculatedData.totalRevenue,
-      totalRevenue: calculatedData.totalRevenue,
-      totalExpenses: calculatedData.totalExpenses + formData.cogs,
-      netProfit: calculatedData.netProfit,
-      highestCategory: calculatedData.highest.name,
-      lowestCategory: calculatedData.lowest.name,
-      data: formData
-    };
-    
     try {
-      await dailyCloseService.submitClosing(newEntry);
+      const response = await dailyCloseService.submitClosing({ storeId: activeStoreId, date: formData.date, action: 'CLOSE', reason: 'Closed from the daily close screen' });
+      const closing = response.data;
+      const newEntry = {
+        ...closing,
+        date: closing.date?.split('T')[0] || formData.date,
+        totalRevenue: Number(closing.totalSales || 0),
+        totalExpenses: Number(closing.totalExpenses || 0),
+        netProfit: Number(closing.netProfit || 0),
+        highestCategory: calculatedData.highest.name,
+        lowestCategory: calculatedData.lowest.name
+      };
       
       // Update UI
       setDailyHistory([
@@ -234,7 +232,7 @@ export default function DailyClose() {
                 onClick={handleSaveClose}
                 className="w-full btn-primary mt-8 py-3 text-base"
               >
-                <Save className="w-5 h-5" /> Save Daily Close
+                <Save className="w-5 h-5" /> Close Business Day
               </button>
             </div>
           </div>

@@ -17,6 +17,8 @@ import AuditLogs from './pages/AuditLogs';
 import Billing from './pages/Billing';
 import PosIntegration from './pages/PosIntegration';
 import HomeDashboard from './pages/HomeDashboard';
+import Transfers from './pages/Transfers';
+import InvoiceInbox from './pages/InvoiceInbox';
 
 export default function App() {
   return (
@@ -39,6 +41,8 @@ export default function App() {
                 <Route path="vendors" element={<Vendors />} />
                 <Route path="audit-logs" element={<AuditLogs />} />
                 <Route path="pos-integration" element={<PosIntegration />} />
+                <Route path="transfers" element={<Transfers />} />
+                <Route path="invoices" element={<InvoiceInbox />} />
                 <Route path="billing" element={<Billing />} />
               </Route>
             </Route>

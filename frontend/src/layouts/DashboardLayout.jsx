@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { LayoutDashboard, Fuel, Package, ShoppingCart, BarChart3, Users, Truck, Bell, Search, Settings, ClipboardCheck, ShieldAlert, CreditCard, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Fuel, Package, ShoppingCart, BarChart3, Users, Truck, Bell, Search, Settings, ClipboardCheck, ShieldAlert, CreditCard, Menu, X, ArrowRightLeft, FileSearch } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { useAuth } from '../context/AuthContext';
 import AIAssistant from '../components/AIAssistant';
@@ -17,6 +17,8 @@ const navItems = [
   { name: 'Vendors', path: '/vendors', icon: Truck },
   { name: 'Audit Logs', path: '/audit-logs', icon: ShieldAlert },
   { name: 'POS Sync', path: '/pos-integration', icon: Settings },
+  { name: 'Transfers', path: '/transfers', icon: ArrowRightLeft },
+  { name: 'Invoice Inbox', path: '/invoices', icon: FileSearch },
 ];
 
 export default function DashboardLayout() {

@@ -4,6 +4,7 @@ import { Settings, RefreshCw, Key, CheckCircle2, AlertCircle, UploadCloud, FileT
 import Papa from 'papaparse';
 import { useData } from '../context/DataContext';
 import { posService, inventoryService } from '../services/api';
+import { getDepartmentConfig } from '../utils/departments';
 
 export default function PosIntegration() {
   const { activeStoreId, inventory } = useData();
@@ -127,22 +128,25 @@ export default function PosIntegration() {
         setMessage(`Successfully imported ${csvData.length} catalog items into inventory.`);
         setLastImport({ file: csvFile?.name || 'catalog.csv', processed: csvData.length, errors: 0 });
       } else {
-        const res = await posService.importCsv({
-          storeId: activeStoreId,
-          date: `${csvDate}T00:00:00.000Z`,
-          filename: csvFile?.name,
-          rows: csvData
-        });
-        const simulatedUnmatched = res.data?.unmatchedItems || [];
-        const processedCount = res.data?.matchedCount ?? csvData.length - simulatedUnmatched.length;
-        
-        if (simulatedUnmatched.length > 0) {
-          setMessage(`Partial import complete. Matched ${processedCount} items. ${simulatedUnmatched.length} items need manual mapping.`);
-          setUnmatchedItems(simulatedUnmatched);
-        } else {
-          setMessage(`Successfully imported POS Sales CSV. Matched ${csvData.length} items. Unmatched: 0`);
+        const unmatched = [];
+        const rows = csvData.map((row) => {
+          const mappedId = mappings[row.productName];
+          const product = inventory.find((item) => item.id === mappedId)
+            || inventory.find((item) => item.productName?.trim().toLowerCase() === row.productName.trim().toLowerCase() || item.sku?.trim().toLowerCase() === row.productName.trim().toLowerCase());
+          const pack = product?.catalog?.packages?.find((candidate) => candidate.unitsPerPackage === 1);
+          if (!product || !pack) { unmatched.push(row.productName); return null; }
+          const taxRate = getDepartmentConfig(product.category).taxRate || 0;
+          return { inventoryId: product.id, packageId: pack.id, location: 'BACKROOM', quantity: Number(row.quantity), price: Number(row.price), taxAmount: Number((row.quantity * row.price * taxRate).toFixed(2)) };
+        }).filter(Boolean);
+        if (unmatched.length) {
+          setUnmatchedItems(unmatched);
+          setMessage(`${unmatched.length} POS item${unmatched.length === 1 ? '' : 's'} need mapping before this import can be posted.`);
+          setLastImport({ file: csvFile?.name || 'sales.csv', processed: rows.length, errors: unmatched.length });
+          return;
         }
-        setLastImport({ file: csvFile?.name || 'sales.csv', processed: processedCount, errors: simulatedUnmatched.length });
+        const res = await posService.importCsv({ storeId: activeStoreId, externalId: `${csvFile?.name || 'sales.csv'}:${csvDate}`, date: `${csvDate}T00:00:00.000Z`, paymentType: 'OTHER', reviewed: true, rows });
+        setMessage(res.data?.message || `Successfully imported ${rows.length} reviewed POS lines.`);
+        setLastImport({ file: csvFile?.name || 'sales.csv', processed: rows.length, errors: 0 });
       }
       setCsvFile(null);
       setCsvData([]);

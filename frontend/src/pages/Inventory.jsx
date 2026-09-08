@@ -25,7 +25,7 @@ export default function Inventory() {
   const [formMode, setFormMode] = useState(null);
   const [viewItem, setViewItem] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
-  const [audit, setAudit] = useState({ id: '', count: '' });
+  const [audit, setAudit] = useState({ id: '', packageId: '', count: '', location: 'BACKROOM' });
   const [loading, setLoading] = useState(false);
   const [formMessage, setFormMessage] = useState(null);
 
@@ -63,6 +63,7 @@ export default function Inventory() {
       selling_price: item.sellingPrice ?? item.price ?? '',
       stock_quantity: item.stockQuantity ?? item.stock ?? 0,
       reorder_level: item.reorderLevel ?? item.lowStockAlert ?? 10,
+      version: item.version ?? 0,
       id: item.id
     });
     setFormMessage(null);
@@ -78,7 +79,8 @@ export default function Inventory() {
       cost_price: Number(form.cost_price),
       selling_price: Number(form.selling_price),
       stock_quantity: Number(form.stock_quantity),
-      reorder_level: Number(form.reorder_level)
+      reorder_level: Number(form.reorder_level),
+      expectedVersion: Number(form.version ?? 0)
     };
     if (!payload.product_name || !payload.category) {
       setFormMessage({ type: 'error', text: 'Product name and category are required.' });
@@ -94,7 +96,11 @@ export default function Inventory() {
     }
     setLoading(true);
     try {
-      if (formMode === 'edit') await inventoryService.updateItem(form.id, payload);
+      if (formMode === 'edit') {
+        const settings = { ...payload };
+        delete settings.stock_quantity;
+        await inventoryService.updateItem(form.id, settings);
+      }
       else await inventoryService.createItem({ ...payload, store_id: activeStoreId });
       await refreshStoreData(activeStoreId);
       setFormMode(null);
@@ -119,15 +125,16 @@ export default function Inventory() {
     event.preventDefault();
     if (!audit.id || audit.count === '' || Number(audit.count) < 0) return;
     try {
-      await recordPhysicalCount('inventory', audit.id, Number(audit.count));
+      await recordPhysicalCount('inventory', audit.id, Number(audit.count), audit.packageId, audit.location);
       setShowAuditModal(false);
-      setAudit({ id: '', count: '' });
+      setAudit({ id: '', packageId: '', count: '', location: 'BACKROOM' });
     } catch (error) {
       window.alert(errorText(error, 'Unable to update physical count.'));
     }
   };
 
   const displayedStock = (item) => Number(item.stockQuantity ?? item.stock ?? 0);
+  const packageStock = (item, packageId, location = 'BACKROOM') => Number(item.balances?.find((balance) => balance.packageId === packageId && balance.location === location)?.quantity || 0);
 
   return (
     <div className="space-y-8">
@@ -137,7 +144,7 @@ export default function Inventory() {
           <p className="text-slate-500 font-medium mt-1">Track SKUs, margins, and stock alerts.</p>
         </div>
         <div className="flex gap-3">
-          <button onClick={() => { setAudit({ id: inventory[0]?.id || '', count: '' }); setShowAuditModal(true); }} disabled={activeStoreId === 'hq' || !inventory.length} className="btn-secondary flex items-center gap-2 bg-white text-rose-600 border-rose-200 hover:bg-rose-50 disabled:opacity-50">
+          <button onClick={() => { const item = inventory[0]; setAudit({ id: item?.id || '', packageId: item?.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1)?.id || item?.catalog?.packages?.[0]?.id || '', count: '', location: 'BACKROOM' }); setShowAuditModal(true); }} disabled={activeStoreId === 'hq' || !inventory.length} className="btn-secondary flex items-center gap-2 bg-white text-rose-600 border-rose-200 hover:bg-rose-50 disabled:opacity-50">
             <AlertTriangle className="w-4 h-4" /> Physical Count
           </button>
           <button onClick={openAdd} disabled={activeStoreId === 'hq'} className="btn-primary flex items-center gap-2 disabled:opacity-50">
@@ -193,7 +200,7 @@ export default function Inventory() {
                   <td className="px-6 py-4 text-slate-500 font-medium text-right">${cost.toFixed(2)}</td>
                   <td className="px-6 py-4 font-semibold text-slate-900 text-right">${price.toFixed(2)}</td>
                   <td className="px-6 py-4 font-bold text-emerald-600 text-right">{margin}%</td>
-                  <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-2">{isLow && <AlertTriangle className="w-4 h-4 text-rose-500" />}<span className={`font-bold ${isLow ? 'text-rose-600' : 'text-slate-900'}`}>{stock}</span></div></td>
+                  <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-2">{isLow && <AlertTriangle className="w-4 h-4 text-rose-500" />}<span className={`font-bold ${isLow ? 'text-rose-600' : 'text-slate-900'}`}>{stock}</span></div><div className="text-[11px] text-slate-400">{item.balances?.filter((balance) => balance.quantity > 0).map((balance) => `${balance.quantity} ${balance.package?.name || 'units'}`).join(' · ') || 'No package stock'}</div></td>
                   <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-1">
                     <button aria-label={`View ${item.productName || item.name}`} onClick={() => setViewItem(item)} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-md transition-colors"><Eye className="w-4 h-4" /></button>
                     <button aria-label={`Edit ${item.productName || item.name}`} onClick={() => openEdit(item)} disabled={activeStoreId === 'hq'} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-md transition-colors disabled:opacity-40"><Edit2 className="w-4 h-4" /></button>
@@ -219,9 +226,9 @@ export default function Inventory() {
         </form>
       </div></div>}
 
-      {viewItem && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-slate-100 flex justify-between items-center"><h3 className="text-xl font-bold text-slate-900">Product Details</h3><button onClick={() => setViewItem(null)} className="text-slate-400"><XCircle className="w-6 h-6" /></button></div><div className="p-6 space-y-4 text-sm"><div><p className="text-xs uppercase font-bold text-slate-400">Product</p><p className="text-lg font-bold text-slate-900">{viewItem.productName || viewItem.name}</p></div><div className="grid grid-cols-2 gap-4"><div><p className="text-xs uppercase font-bold text-slate-400">SKU</p><p className="font-mono text-slate-700">{viewItem.sku}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Category</p><p className="text-slate-700">{viewItem.category}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Cost</p><p className="text-slate-700">${Number(viewItem.costPrice ?? viewItem.cost ?? 0).toFixed(2)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Selling Price</p><p className="text-slate-700">${Number(viewItem.sellingPrice ?? viewItem.price ?? 0).toFixed(2)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Stock</p><p className="font-bold text-slate-900">{displayedStock(viewItem)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Reorder Level</p><p className="text-slate-700">{viewItem.reorderLevel ?? viewItem.lowStockAlert ?? 10}</p></div></div><button onClick={() => { setViewItem(null); openEdit(viewItem); }} disabled={activeStoreId === 'hq'} className="w-full btn-primary disabled:opacity-50">Edit Product</button></div></div></div>}
+      {viewItem && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-slate-100 flex justify-between items-center"><h3 className="text-xl font-bold text-slate-900">Product Details</h3><button onClick={() => setViewItem(null)} className="text-slate-400"><XCircle className="w-6 h-6" /></button></div><div className="p-6 space-y-4 text-sm"><div><p className="text-xs uppercase font-bold text-slate-400">Product</p><p className="text-lg font-bold text-slate-900">{viewItem.productName || viewItem.name}</p></div><div className="grid grid-cols-2 gap-4"><div><p className="text-xs uppercase font-bold text-slate-400">SKU</p><p className="font-mono text-slate-700">{viewItem.sku}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Category</p><p className="text-slate-700">{viewItem.category}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Cost</p><p className="text-slate-700">${Number(viewItem.costPrice ?? viewItem.cost ?? 0).toFixed(2)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Selling Price</p><p className="text-slate-700">${Number(viewItem.sellingPrice ?? viewItem.price ?? 0).toFixed(2)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Stock</p><p className="font-bold text-slate-900">{displayedStock(viewItem)} base units</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Reorder Level</p><p className="text-slate-700">{viewItem.reorderLevel ?? viewItem.lowStockAlert ?? 10}</p></div></div><div className="border-t border-slate-100 pt-4"><p className="text-xs uppercase font-bold text-slate-400 mb-2">Package balances</p><div className="space-y-1">{(viewItem.catalog?.packages || []).map((pack) => <div key={pack.id} className="flex justify-between text-slate-600"><span>{pack.name} ({pack.unitsPerPackage} units)</span><span className="font-semibold">{packageStock(viewItem, pack.id, 'BACKROOM')} backroom · {packageStock(viewItem, pack.id, 'SHELF')} shelf</span></div>)}</div></div><button onClick={() => { setViewItem(null); openEdit(viewItem); }} disabled={activeStoreId === 'hq'} className="w-full btn-primary disabled:opacity-50">Edit Product</button></div></div></div>}
 
-      {showAuditModal && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-rose-100 bg-rose-50/30"><h3 className="text-xl font-bold text-rose-900">Inventory Reconciliation</h3><p className="text-sm text-rose-600/80 mt-1">Enter the actual physical count on shelves.</p></div><form onSubmit={handleAuditSubmit} className="p-6 space-y-5"><label className="block text-sm font-semibold text-slate-700">Select Product<select required value={audit.id} onChange={(event) => setAudit({ ...audit, id: event.target.value })} className="mt-1.5 w-full input">{inventory.map((item) => <option key={item.id} value={item.id}>{item.productName || item.name} (Expected: {displayedStock(item)})</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Actual Count<input required min="0" type="number" value={audit.count} onChange={(event) => setAudit({ ...audit, count: event.target.value })} className="mt-1.5 w-full input" /></label><div className="flex gap-3 pt-4"><button type="button" onClick={() => setShowAuditModal(false)} className="flex-1 btn-secondary">Cancel</button><button type="submit" className="flex-1 btn-primary bg-rose-600 hover:bg-rose-700">Save Count</button></div></form></div></div>}
+      {showAuditModal && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-rose-100 bg-rose-50/30"><h3 className="text-xl font-bold text-rose-900">Inventory Reconciliation</h3><p className="text-sm text-rose-600/80 mt-1">Count one package type and location at a time.</p></div><form onSubmit={handleAuditSubmit} className="p-6 space-y-5"><label className="block text-sm font-semibold text-slate-700">Select Product<select required value={audit.id} onChange={(event) => { const item = inventory.find((entry) => entry.id === event.target.value); setAudit({ ...audit, id: event.target.value, packageId: item?.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1)?.id || item?.catalog?.packages?.[0]?.id || '' }); }} className="mt-1.5 w-full input">{inventory.map((item) => <option key={item.id} value={item.id}>{item.productName || item.name} ({displayedStock(item)} base units)</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Package<select required value={audit.packageId} onChange={(event) => setAudit({ ...audit, packageId: event.target.value })} className="mt-1.5 w-full input">{(inventory.find((item) => item.id === audit.id)?.catalog?.packages || []).map((pack) => <option key={pack.id} value={pack.id}>{pack.name} ({pack.unitsPerPackage} units)</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Location<select value={audit.location} onChange={(event) => setAudit({ ...audit, location: event.target.value })} className="mt-1.5 w-full input"><option value="BACKROOM">Backroom</option><option value="SHELF">Shelf</option></select></label><label className="block text-sm font-semibold text-slate-700">Actual package count<input required min="0" type="number" value={audit.count} onChange={(event) => setAudit({ ...audit, count: event.target.value })} className="mt-1.5 w-full input" /></label><div className="flex gap-3 pt-4"><button type="button" onClick={() => setShowAuditModal(false)} className="flex-1 btn-secondary">Cancel</button><button type="submit" className="flex-1 btn-primary bg-rose-600 hover:bg-rose-700">Save Count</button></div></form></div></div>}
     </div>
   );
 }
