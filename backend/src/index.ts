@@ -14,6 +14,12 @@ import storeRoutes from './routes/stores';
 import vendorRoutes from './routes/vendors';
 import employeeRoutes from './routes/employees';
 import auditLogRoutes from './routes/auditLogs';
+import transferRoutes from './routes/transfers';
+import settlementRoutes from './routes/settlements';
+import invoiceRoutes from './routes/invoices';
+import expenseRoutes from './routes/expenses';
+import assistantRoutes from './routes/assistant';
+import { errors } from './utils/http';
 
 const app = express();
 const server = http.createServer(app);
@@ -33,7 +39,7 @@ app.use(cors({
     : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:5174', 'http://127.0.0.1:5174'],
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Global Request Logger
 app.use((req, res, next) => {
@@ -73,6 +79,12 @@ app.use('/api/pos', posRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
+app.use('/api/transfers', transferRoutes);
+app.use('/api/settlements', settlementRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/assistant', assistantRoutes);
+app.use(errors);
 
 server.listen(PORT, () => {
   console.log(`Server & WebSockets running on port ${PORT}`);

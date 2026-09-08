@@ -1,210 +1,163 @@
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { prisma } from '../db';
-import { requireAuth, requireRole } from '../middleware/auth';
-import { canAccessStore } from '../utils/storeAccess';
-import { writeAuditLog } from '../utils/audit';
+import { requireAuth } from '../middleware/auth';
+import { actorOf, endpoint, keyOf, emitStore } from '../utils/http';
+import { accessStore, audit, changeStock, D, fail, inventoryInclude, manager, operate, ownerFor, receiveCostedStock, stockItem, stockView } from '../services/operations';
 
 const router = Router();
 router.use(requireAuth);
-
-const inventorySchema = z.object({
-  storeId: z.string().uuid(),
-  productName: z.string().min(1),
-  category: z.string().min(1),
-  sku: z.string().min(1),
-  costPrice: z.number().positive('Cost price is required and must be positive'),
-  sellingPrice: z.number().positive(),
-  stockQuantity: z.number().int().min(0, 'Inventory cannot be negative'),
-  reorderLevel: z.number().int().min(0).optional().default(0),
+const amount = z.number().finite().nonnegative().max(9999999);
+const qty = z.number().int().min(0).max(100000000);
+const signedQty = z.number().int().min(-100000000).max(100000000);
+const createSchema = z.object({ storeId: z.string().uuid(), catalogId: z.string().uuid().optional(), productName: z.string().trim().min(1).max(150),
+  sku: z.string().trim().min(1).max(100), category: z.string().trim().min(1).max(100), baseUnit: z.string().trim().min(1).max(30).default('each'),
+  costPrice: amount, sellingPrice: amount, stockQuantity: qty, reorderLevel: qty.default(10), taxRate: z.number().min(0).max(1).default(0) });
+const importSchema = createSchema.omit({ storeId: true, sku: true, costPrice: true, stockQuantity: true }).extend({
+  sku: z.string().trim().min(1).max(100).optional(), costPrice: amount.default(0), stockQuantity: qty.default(0)
 });
+const normalized = (body: any) => ({ ...body, storeId: body.storeId ?? body.store_id, productName: body.productName ?? body.product_name,
+  costPrice: body.costPrice ?? body.cost_price, sellingPrice: body.sellingPrice ?? body.selling_price,
+  stockQuantity: body.stockQuantity ?? body.stock_quantity, reorderLevel: body.reorderLevel ?? body.reorder_level });
 
-// All authenticated users can view inventory
-router.get('/', async (req, res) => {
-  try {
-    const storeId = req.query.storeId as string || (req as any).user.storeId;
-    if (!storeId) return res.status(400).json({ error: 'storeId is required' });
-    if (!(await canAccessStore((req as any).user.id, storeId))) {
-      return res.status(403).json({ error: 'You do not have access to this store' });
+router.get('/catalog', endpoint(async (req, res) => {
+  const ownerId = await ownerFor(prisma, actorOf(req));
+  res.json(await prisma.product.findMany({ where: { ownerId }, include: { packages: true }, orderBy: { name: 'asc' } }));
+}));
+router.get('/movements', endpoint(async (req, res) => {
+  const storeId = z.string().uuid().parse(req.query.storeId);
+  await accessStore(prisma, actorOf(req), storeId);
+  const take = z.coerce.number().int().min(1).max(200).default(100).parse(req.query.take);
+  res.json(await prisma.stockMovement.findMany({ where: { storeId, ...(req.query.inventoryId ? { inventoryId: String(req.query.inventoryId) } : {}) },
+    include: { inventory: { select: { productName: true, sku: true } }, package: true, operation: { select: { actorId: true } } }, orderBy: { createdAt: 'desc' }, take }));
+}));
+router.get('/', endpoint(async (req, res) => {
+  const storeId = z.string().uuid().parse(req.query.storeId);
+  await accessStore(prisma, actorOf(req), storeId);
+  const rows = await prisma.inventory.findMany({ where: { storeId, ...(req.query.archived === 'true' ? {} : { archivedAt: null }),
+    ...(req.query.category ? { category: String(req.query.category) } : {}),
+    ...(req.query.search ? { OR: [{ productName: { contains: String(req.query.search), mode: 'insensitive' as const } }, { sku: { contains: String(req.query.search), mode: 'insensitive' as const } }] } : {}) },
+    include: inventoryInclude, orderBy: { productName: 'asc' } });
+  res.json(rows.map(stockView).filter(i => req.query.stock === 'low' ? i.availableQuantity <= i.reorderLevel : req.query.stock === 'out' ? i.availableQuantity === 0 : true));
+}));
+router.get('/:id', endpoint(async (req, res) => {
+  res.json(stockView(await stockItem(prisma, actorOf(req), String(req.params.id))));
+}));
+
+async function createItem(tx: any, op: any, data: z.infer<typeof createSchema>) {
+  manager(op.actor);
+  await accessStore(tx, op.actor, data.storeId);
+  let catalog = data.catalogId ? await tx.product.findUnique({ where: { id: data.catalogId } }) : await tx.product.findUnique({ where: { ownerId_sku: { ownerId: op.ownerId, sku: data.sku } } });
+  if (catalog && catalog.ownerId !== op.ownerId) fail('Catalog access denied.', 403);
+  if (!catalog) catalog = await tx.product.create({ data: { ownerId: op.ownerId, sku: data.sku, name: data.productName, category: data.category, baseUnit: data.baseUnit,
+    packages: { create: { name: 'Each', unitsPerPackage: 1 } } } });
+  const item = await tx.inventory.create({ data: { storeId: data.storeId, catalogId: catalog.id, productName: catalog.name, category: catalog.category, sku: catalog.sku,
+    costPrice: data.costPrice, sellingPrice: data.sellingPrice, reorderLevel: data.reorderLevel, taxRate: data.taxRate } });
+  const each = await tx.productPackage.findFirstOrThrow({ where: { productId: catalog.id, unitsPerPackage: 1 } });
+  await changeStock(tx, op, { inventoryId: item.id, packageId: each.id, location: 'BACKROOM', quantity: data.stockQuantity,
+    kind: 'OPENING', reason: 'Opening stock entered when adding this store product.' });
+  await audit(tx, op, item.storeId, 'Added store product', { inventoryId: item.id, quantity: data.stockQuantity });
+  return tx.inventory.findUniqueOrThrow({ where: { id: item.id }, include: inventoryInclude });
+}
+router.post('/', endpoint(async (req, res) => {
+  const data = createSchema.parse({ ...normalized(req.body), sku: req.body.sku || `SKU-${randomUUID().slice(0, 8).toUpperCase()}` });
+  const result = await operate(actorOf(req), keyOf(req), { action: 'create-product', data }, (tx, op) => createItem(tx, op, data));
+  emitStore(req, data.storeId); res.status(201).json(result);
+}));
+router.post('/import-csv', endpoint(async (req, res) => {
+  const storeId = z.string().uuid().parse(req.body.storeId);
+  const rawItems = z.array(importSchema).min(1).max(200).parse(req.body.items);
+  const items = rawItems.map((item, index) => ({ ...item, sku: item.sku || `IMP-${Date.now().toString(36).toUpperCase()}-${index + 1}` }));
+  const result = await operate(actorOf(req), keyOf(req), { action: 'catalog-import', storeId, items }, async (tx, op) => {
+    for (const item of items) await createItem(tx, op, { ...item, storeId });
+    return { count: items.length, message: `Imported ${items.length} products.` };
+  }); emitStore(req, storeId); res.status(201).json(result);
+}));
+router.put('/:id', endpoint(async (req, res) => {
+  const id = String(req.params.id);
+  const data = createSchema.omit({ storeId: true, catalogId: true, baseUnit: true, stockQuantity: true }).partial().extend({ expectedVersion: z.number().int().min(0) }).parse(normalized(req.body));
+  if (req.body.stockQuantity !== undefined || req.body.stock_quantity !== undefined) fail('Use the physical count action to change stock.');
+  const result = await operate(actorOf(req), keyOf(req), { action: 'edit-product', id, data }, async (tx, op) => {
+    manager(op.actor); const item = await stockItem(tx, op.actor, id);
+    if (item.version !== data.expectedVersion) fail('Stock changed since this form opened. Refresh before saving.', 409);
+    if (data.costPrice !== undefined && !D(data.costPrice).equals(item.costPrice) && item.stockQuantity > 0) fail('Cost is calculated from receipts. Receive stock or perform a documented stock valuation adjustment.');
+    const shared = (data.productName && data.productName !== item.productName) || (data.sku && data.sku !== item.sku) || (data.category && data.category !== item.category);
+    if (shared) {
+      if (op.actor.role !== 'OWNER') fail('Only the owner can change shared product details.', 403);
+      await tx.product.update({ where: { id: item.catalogId }, data: { name: data.productName, sku: data.sku, category: data.category } });
+      await tx.inventory.updateMany({ where: { catalogId: item.catalogId }, data: { productName: data.productName, sku: data.sku, category: data.category, version: { increment: 1 } } });
     }
-
-    const where: any = { storeId };
-    if (req.query.category) where.category = req.query.category;
-    if (req.query.search) {
-      where.OR = [
-        { productName: { contains: req.query.search as string, mode: 'insensitive' } },
-        { sku: { contains: req.query.search as string, mode: 'insensitive' } }
-      ];
+    const { expectedVersion: _, ...updates } = data;
+    await tx.inventory.update({ where: { id }, data: { ...updates, version: { increment: 1 } } });
+    await audit(tx, op, item.storeId, 'Edited product settings', { id, before: item, changes: updates });
+    return tx.inventory.findUniqueOrThrow({ where: { id }, include: inventoryInclude });
+  }); emitStore(req, result.storeId); res.json(result);
+}));
+router.delete('/:id', endpoint(async (req, res) => {
+  const id = String(req.params.id);
+  const result = await operate(actorOf(req), keyOf(req), { action: 'archive-product', id }, async (tx, op) => {
+    manager(op.actor); const item = await stockItem(tx, op.actor, id);
+    if (item.stockQuantity || item.balances.some(b => b.reserved)) fail('Move or reconcile the remaining stock before archiving.', 409);
+    const pending = await tx.stockTransferLine.count({ where: { productId: item.catalogId, transfer: { OR: [{ sourceStoreId: item.storeId }, { destinationStoreId: item.storeId }], status: { in: ['DRAFT', 'RESERVED', 'DISPATCHED', 'PARTIAL'] } } } });
+    if (pending) fail('Resolve open transfers before archiving this product.', 409);
+    await tx.inventory.update({ where: { id }, data: { archivedAt: new Date() } });
+    await audit(tx, op, item.storeId, 'Archived product', { id }); return { success: true, storeId: item.storeId };
+  }); emitStore(req, result.storeId); res.json(result);
+}));
+router.post('/:id/restore', endpoint(async (req, res) => {
+  const id = String(req.params.id);
+  const result = await operate(actorOf(req), keyOf(req), { action: 'restore-product', id }, async (tx, op) => {
+    manager(op.actor); const item = await tx.inventory.findUniqueOrThrow({ where: { id } }); await accessStore(tx, op.actor, item.storeId);
+    await tx.inventory.update({ where: { id }, data: { archivedAt: null } }); await audit(tx, op, item.storeId, 'Restored product', { id }); return item;
+  }); emitStore(req, result.storeId); res.json(result);
+}));
+router.post('/:id/packages', endpoint(async (req, res) => {
+  const id = String(req.params.id);
+  const data = z.object({ name: z.string().trim().min(1).max(50), unitsPerPackage: z.number().int().min(2).max(10000), barcode: z.string().trim().min(1).max(100).optional() }).parse(req.body);
+  const result = await operate(actorOf(req), keyOf(req), { action: 'add-package', id, data }, async (tx, op) => {
+    manager(op.actor); const item = await stockItem(tx, op.actor, id);
+    if (data.barcode && await tx.productPackage.findFirst({ where: { barcode: data.barcode, product: { ownerId: op.ownerId } } })) fail('This barcode already belongs to a package.', 409);
+    const pack = await tx.productPackage.create({ data: { ...data, productId: item.catalogId } });
+    await audit(tx, op, item.storeId, 'Defined packaging', pack); return { ...pack, storeId: item.storeId };
+  }); emitStore(req, result.storeId); res.status(201).json(result);
+}));
+const movementSchema = z.object({ kind: z.enum(['RECEIVE', 'COUNT', 'MOVE', 'CONVERT', 'ADJUST', 'PRICE']), packageId: z.string().uuid(), location: z.enum(['BACKROOM', 'SHELF']),
+  quantity: signedQty, toPackageId: z.string().uuid().optional(), toLocation: z.enum(['BACKROOM', 'SHELF']).optional(), expectedVersion: z.number().int().nonnegative().optional(),
+  unitCost: amount.optional(), sellingPrice: amount.optional(), reason: z.string().trim().min(3).max(500) });
+router.post('/:id/stock', endpoint(async (req, res) => {
+  const id = String(req.params.id); const data = movementSchema.parse(req.body);
+  const result = await operate(actorOf(req), keyOf(req), { action: 'stock', id, data }, async (tx, op) => {
+    manager(op.actor); const item = await stockItem(tx, op.actor, id);
+    const pack = item.catalog.packages.find(p => p.id === data.packageId); if (!pack) return fail('Select packaging for this product.');
+    const common = { inventoryId: id, packageId: pack.id, location: data.location, kind: data.kind, reason: data.reason };
+    if (data.kind === 'COUNT') {
+      if (data.expectedVersion === undefined || data.expectedVersion !== item.version) fail('Stock changed since the count began. Refresh and recount.', 409);
+      if (data.quantity < 0) fail('A physical count cannot be negative.');
+      const current = item.balances.find(b => b.packageId === pack.id && b.location === data.location)?.quantity || 0;
+      await changeStock(tx, op, { ...common, quantity: data.quantity - current });
+    } else if (data.kind === 'RECEIVE') {
+      if (data.unitCost === undefined || data.quantity < 1) fail('A positive quantity and cost per package are required.');
+      await receiveCostedStock(tx, op, { ...common, quantity: data.quantity, unitCost: D(data.unitCost!).div(pack.unitsPerPackage) });
+    } else if (data.kind === 'ADJUST') {
+      if (data.quantity === 0) fail('Enter a non-zero stock adjustment.');
+      await changeStock(tx, op, { ...common, quantity: data.quantity });
+    } else if (data.kind === 'PRICE') {
+      if (data.sellingPrice === undefined) fail('Package selling price is required.');
+      await tx.stockBalance.upsert({ where: { inventoryId_packageId_location: { inventoryId: id, packageId: pack.id, location: data.location } },
+        create: { inventoryId: id, packageId: pack.id, location: data.location, sellingPrice: data.sellingPrice }, update: { sellingPrice: data.sellingPrice } });
+    } else {
+      if (data.quantity < 1 || !data.toLocation) fail('A positive quantity and destination location are required.');
+      const target = data.kind === 'MOVE' ? pack : item.catalog.packages.find(p => p.id === data.toPackageId);
+      if (!target) return fail('Select destination packaging.');
+      const converted = data.quantity * pack.unitsPerPackage / target.unitsPerPackage;
+      if (!Number.isInteger(converted)) fail('The quantity must convert into whole destination packs.');
+      if (pack.id === target.id && data.location === data.toLocation) fail('Choose different packaging or a different location.');
+      await changeStock(tx, op, { ...common, quantity: -data.quantity });
+      await changeStock(tx, op, { ...common, packageId: target.id, location: data.toLocation!, quantity: converted });
     }
-    if (req.query.stock === 'low') where.stockQuantity = { lte: 10 };
-    if (req.query.stock === 'out') where.stockQuantity = 0;
-    const inventory = await prisma.inventory.findMany({ where, orderBy: { productName: 'asc' } });
-    res.json(inventory);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch inventory' });
-  }
-});
-
-router.get('/:id', async (req, res) => {
-  try {
-    const item = await prisma.inventory.findUnique({ where: { id: req.params.id } });
-    if (!item) return res.status(404).json({ error: 'Inventory item not found' });
-    if (!(await canAccessStore((req as any).user.id, item.storeId))) {
-      return res.status(403).json({ error: 'You do not have access to this store' });
-    }
-    res.json(item);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch inventory item' });
-  }
-});
-
-router.post('/', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
-  try {
-    const rawData = req.body;
-    
-    // Map JSON payload (snake_case) to DB Schema (camelCase)
-    // Get active store from UI OR fallback to user session
-    const mappedData = {
-      storeId: rawData.store_id || rawData.storeId || (req as any).user.storeId,
-      productName: rawData.product_name || rawData.productName,
-      category: rawData.category,
-      sku: rawData.sku || `SKU-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-      costPrice: rawData.cost_price !== undefined ? rawData.cost_price : rawData.costPrice,
-      sellingPrice: rawData.selling_price !== undefined ? rawData.selling_price : rawData.sellingPrice,
-      stockQuantity: rawData.stock_quantity !== undefined ? rawData.stock_quantity : rawData.stockQuantity,
-      reorderLevel: rawData.reorder_level !== undefined ? rawData.reorder_level : (rawData.reorderLevel ?? 10)
-    };
-
-    const validatedData = inventorySchema.parse(mappedData);
-    if (!(await canAccessStore((req as any).user.id, validatedData.storeId))) {
-      return res.status(403).json({ error: 'You do not have access to this store' });
-    }
-    const item = await prisma.inventory.create({ data: validatedData });
-    await writeAuditLog(prisma, {
-      storeId: item.storeId,
-      userId: (req as any).user.id,
-      action: `Added product: ${item.productName}`,
-      module: 'Inventory',
-      oldValue: null,
-      newValue: `${item.sku}, stock ${item.stockQuantity}`
-    });
-    
-    const io = req.app.get('io');
-    if (io) io.to(`store-${validatedData.storeId}`).emit('inventory_updated', { storeId: validatedData.storeId });
-    
-    res.status(201).json(item);
-  } catch (error: any) {
-    res.status(400).json({ error: error.errors || 'Validation Failed' });
-  }
-});
-
-router.post('/import-csv', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
-  try {
-    const { storeId, items } = req.body;
-    if (!storeId || !(await canAccessStore((req as any).user.id, storeId))) {
-      return res.status(403).json({ error: 'You do not have access to this store' });
-    }
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'At least one catalog item is required' });
-    }
-    
-    // Auto-generate SKU and defaults
-    const newItems = items.map((item: any) => ({
-      storeId,
-      productName: item.productName,
-      category: item.category || 'General',
-      sku: `SKU-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-      sellingPrice: Number(item.sellingPrice),
-      costPrice: Number(item.costPrice ?? Number(item.sellingPrice) * 0.7),
-      stockQuantity: Number(item.stockQuantity ?? 0),
-      reorderLevel: Number(item.reorderLevel ?? 10)
-    }));
-
-    const invalidItem = newItems.find((item: any) => !item.productName || !Number.isFinite(item.sellingPrice) || item.sellingPrice <= 0 || !Number.isFinite(item.costPrice) || item.costPrice <= 0 || !Number.isInteger(item.stockQuantity) || item.stockQuantity < 0 || !Number.isInteger(item.reorderLevel) || item.reorderLevel < 0);
-    if (invalidItem) return res.status(400).json({ error: 'Catalog rows contain invalid price, stock, or reorder values' });
-
-    const result = await prisma.inventory.createMany({
-      data: newItems,
-      skipDuplicates: true // Prevent crashing if somehow a unique constraint hits
-    });
-
-    const io = req.app.get('io');
-    if (io) io.to(`store-${storeId}`).emit('inventory_updated', { storeId });
-
-    res.status(201).json({ message: `Successfully imported ${result.count} catalog items.`, count: result.count });
-  } catch (error: any) {
-    res.status(400).json({ error: 'Failed to import catalog CSV' });
-  }
-});
-
-router.put('/:id', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
-  try {
-    const id = req.params.id as string;
-    const existing = await prisma.inventory.findUnique({ where: { id } });
-    if (!existing) return res.status(404).json({ error: 'Inventory item not found' });
-    if (!(await canAccessStore((req as any).user.id, existing.storeId))) {
-      return res.status(403).json({ error: 'You do not have access to this store' });
-    }
-    const rawData = req.body;
-    const mappedData = {
-      productName: rawData.product_name ?? rawData.productName,
-      category: rawData.category,
-      sku: rawData.sku,
-      costPrice: rawData.cost_price ?? rawData.costPrice,
-      sellingPrice: rawData.selling_price ?? rawData.sellingPrice,
-      stockQuantity: rawData.stock_quantity ?? rawData.stockQuantity,
-      reorderLevel: rawData.reorder_level ?? rawData.reorderLevel
-    };
-    const validatedData = inventorySchema.omit({ storeId: true }).partial().parse(mappedData);
-    
-    const updated = await prisma.inventory.update({
-      where: { id },
-      data: validatedData
-    });
-    await writeAuditLog(prisma, {
-      storeId: updated.storeId,
-      userId: (req as any).user.id,
-      action: `Updated product: ${updated.productName}`,
-      module: 'Inventory',
-      oldValue: `${existing.sku}, stock ${existing.stockQuantity}`,
-      newValue: `${updated.sku}, stock ${updated.stockQuantity}`
-    });
-    
-    const io = req.app.get('io');
-    if (io) io.to(`store-${updated.storeId}`).emit('inventory_updated', { storeId: updated.storeId, action: 'update', data: updated });
-
-    res.json(updated);
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'Failed to update inventory item' });
-  }
-});
-
-router.delete('/:id', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
-  try {
-    const id = req.params.id as string;
-    const item = await prisma.inventory.findUnique({ where: { id } });
-    if (item) {
-      if (!(await canAccessStore((req as any).user.id, item.storeId))) {
-        return res.status(403).json({ error: 'You do not have access to this store' });
-      }
-      await prisma.inventory.delete({ where: { id } });
-      await writeAuditLog(prisma, {
-        storeId: item.storeId,
-        userId: (req as any).user.id,
-        action: `Deleted product: ${item.productName}`,
-        module: 'Inventory',
-        oldValue: `${item.sku}, stock ${item.stockQuantity}`,
-        newValue: null
-      });
-      
-      const io = req.app.get('io');
-      if (io) io.to(`store-${item.storeId}`).emit('inventory_updated', { storeId: item.storeId, action: 'delete', data: { id } });
-    }
-    
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(error?.code === 'P2003' ? 409 : 500).json({ error: error?.code === 'P2003' ? 'This product has sales history and cannot be deleted.' : 'Failed to delete inventory item' });
-  }
-});
-
+    await audit(tx, op, item.storeId, `Stock ${data.kind.toLowerCase()}`, { inventoryId: id, ...data });
+    return tx.inventory.findUniqueOrThrow({ where: { id }, include: inventoryInclude });
+  }); emitStore(req, result.storeId); res.json(stockView(result));
+}));
 export default router;
