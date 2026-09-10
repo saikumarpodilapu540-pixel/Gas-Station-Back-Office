@@ -12,35 +12,17 @@ export const api = axios.create({
   }
 });
 
-// Request Interceptor: Attach token and log request
+// Keep credentials and uploaded documents out of browser logs.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('fuelops_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  
-  // Debug mode: Log API Requests
-  console.log(`[API REQUEST] ${config.method.toUpperCase()} ${config.baseURL}${config.url}`, config.data || '');
-  
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
-}, (error) => {
-  console.error('[API REQUEST ERROR]', error);
-  return Promise.reject(error);
-});
-
-// Response Interceptor: Log responses and errors globally
-api.interceptors.response.use((response) => {
-  // Debug mode: Log API Responses
-  console.log(`[API RESPONSE] ${response.config.method.toUpperCase()} ${response.config.url}`, response.data);
-  return response;
-}, (error) => {
-  console.error('[API RESPONSE ERROR]', error.response?.data || error.message);
-  return Promise.reject(error);
 });
 
 // Setup Socket
 export const socket = io(SOCKET_URL, {
-  autoConnect: false // Connect manually after login
+  autoConnect: false,
+  auth: (callback) => callback({ token: localStorage.getItem('fuelops_token') })
 });
 
 const generatedKey = (prefix) => `${prefix}-${Date.now()}-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
@@ -57,6 +39,7 @@ export const storeService = {
 };
 
 export const inventoryService = {
+  movements: (storeId, inventoryId) => api.get('/inventory/movements', { params: { storeId, inventoryId } }),
   getInventory: (storeId) => api.get(`/inventory?storeId=${storeId}`),
   getItem: (id) => api.get(`/inventory/${id}`),
   createItem: (data, requestKey) => api.post('/inventory', data, writeConfig('inventory-create', requestKey)),
@@ -135,7 +118,11 @@ export const invoiceService = {
   getPurchases: (storeId) => api.get(`/invoices/purchases?storeId=${storeId}`),
   upload: (data) => api.post('/invoices', data),
   extract: (id) => api.post(`/invoices/${id}/extract`),
-  saveDraft: (id, draft) => api.put(`/invoices/${id}/draft`, { draft }),
+  getById: (id) => api.get(`/invoices/${id}`),
+  download: (id) => api.get(`/invoices/${id}/file`, { responseType: 'blob' }),
+  saveDraft: (id, draft, expectedUpdatedAt) => api.put(`/invoices/${id}/draft`, { draft, expectedUpdatedAt }),
+  manual: (data, requestKey) => api.post('/invoices/manual', data, writeConfig('manual-purchase', requestKey)),
+  voidPurchase: (id, reason, requestKey) => api.post(`/invoices/purchases/${id}/void`, { reason }, writeConfig('purchase-void', requestKey)),
   approve: (id, data, requestKey) => api.post(`/invoices/${id}/approve`, data, { headers: { 'Idempotency-Key': requestKey } })
 };
 

@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   auditService,
   dailyCloseService,
@@ -12,7 +12,6 @@ import {
   vendorService
 } from '../services/api';
 import { useAuth } from './AuthContext';
-import { getDepartmentConfig } from '../utils/departments';
 
 const DataContext = createContext();
 
@@ -20,6 +19,8 @@ export const useData = () => useContext(DataContext);
 
 const toInventoryView = (item) => ({
   id: item.id,
+  storeId: item.storeId,
+  taxRate: Number(item.taxRate || 0),
   name: item.productName,
   productName: item.productName,
   category: item.category,
@@ -71,6 +72,10 @@ export const DataProvider = ({ children }) => {
   const activeStoreId = selectedStoreId === 'hq' || stores.some((store) => store.id === selectedStoreId)
     ? selectedStoreId
     : (stores[0]?.id || '');
+  const activeRequest = useRef(0);
+  const currentStore = useRef(activeStoreId);
+  const [loadedStoreId, setLoadedStoreId] = useState('');
+  useLayoutEffect(() => { currentStore.current = activeStoreId; ++activeRequest.current; }, [activeStoreId]);
   const [inventory, setInventory] = useState([]);
   const [salesLog, setSalesLog] = useState([]);
   const [dailyHistory, setDailyHistory] = useState([]);
@@ -87,7 +92,8 @@ export const DataProvider = ({ children }) => {
   const [fuelLogs, setFuelLogs] = useState([]);
 
   const refreshStoreData = useCallback(async (storeId) => {
-    if (!storeId || storeId === 'hq') return;
+    if (!storeId || storeId === 'hq' || currentStore.current !== storeId) return;
+    const sequence = ++activeRequest.current;
     setDataLoading(true);
     setDataError('');
     try {
@@ -102,6 +108,8 @@ export const DataProvider = ({ children }) => {
         employeeService.getAll(storeId),
         auditService.getAll(storeId)
       ]);
+      if (activeRequest.current !== sequence || currentStore.current !== storeId) return;
+      setLoadedStoreId(storeId);
       setInventory(inventoryResponse.data.map(toInventoryView));
       setSalesLog(salesResponse.data.map(toSaleView));
       setReport(reportResponse.data);
@@ -123,9 +131,9 @@ export const DataProvider = ({ children }) => {
         newValue: log.newValue ?? 'None'
       })));
     } catch (error) {
-      setDataError(error.response?.data?.error || 'Unable to load store data');
+      if (activeRequest.current === sequence) setDataError(error.response?.data?.error || 'Unable to load store data');
     } finally {
-      setDataLoading(false);
+      if (activeRequest.current === sequence) setDataLoading(false);
     }
   }, [reportDateRange]);
 
@@ -138,11 +146,10 @@ export const DataProvider = ({ children }) => {
       }))).then(setHqReports).catch(() => setDataError('Unable to load company totals'));
       return;
     }
-    const timer = window.setTimeout(() => {
-      refreshStoreData(activeStoreId);
-      socket.emit('join_store', activeStoreId);
-    }, 0);
-    return () => window.clearTimeout(timer);
+    const join = () => socket.emit('join_store', activeStoreId);
+    socket.on('connect', join);
+    const timer = window.setTimeout(() => { refreshStoreData(activeStoreId); if (socket.connected) join(); }, 0);
+    return () => { window.clearTimeout(timer); socket.off('connect', join); socket.emit('leave_store', activeStoreId); };
   }, [activeStoreId, refreshStoreData, reportDateRange, stores]);
 
   useEffect(() => {
@@ -157,18 +164,18 @@ export const DataProvider = ({ children }) => {
     };
   }, [activeStoreId, refreshStoreData]);
 
-  const recordStoreSale = async (items, paymentType = 'CASH') => {
+  const recordStoreSale = async (items, paymentType = 'CASH', requestKey) => {
     const response = await salesService.recordSale({
       storeId: activeStoreId,
       category: 'store',
       paymentType,
       items: items.map((item) => ({ productId: item.id, packageId: item.packageId, location: item.location || 'BACKROOM', quantity: Number(item.qty) }))
-    });
+    }, requestKey);
     await refreshStoreData(activeStoreId);
     return response.data;
   };
 
-  const recordPhysicalCount = async (type, itemId, actualCount, packageId, location = 'BACKROOM') => {
+  const recordPhysicalCount = async (type, itemId, actualCount, packageId, location = 'BACKROOM', expectedVersion) => {
     if (type === 'fuel') {
       await fuelService.updateTank(itemId, { currentLevel: Number(actualCount) });
       await refreshStoreData(activeStoreId);
@@ -180,7 +187,7 @@ export const DataProvider = ({ children }) => {
       || existing?.catalog?.packages?.find((candidate) => candidate.unitsPerPackage === 1);
     if (!pack) throw new Error('This product has no package definition.');
     await inventoryService.stockAction(itemId, {
-      kind: 'COUNT', packageId: pack.id, location, quantity: Number(actualCount), expectedVersion: existing.version,
+      kind: 'COUNT', packageId: pack.id, location, quantity: Number(actualCount), expectedVersion: expectedVersion ?? existing.version,
       reason: 'Physical count reconciliation'
     }, `physical-count-${itemId}-${existing.version}-${Date.now()}`);
     if (existing && pack.unitsPerPackage === 1 && Number(actualCount) < existing.stock) {
@@ -260,7 +267,7 @@ export const DataProvider = ({ children }) => {
 
   const taxByDept = useMemo(() => {
     const breakdown = deptSales.map((department) => {
-      const tax = department.revenue * (getDepartmentConfig(department.name).taxRate || 0);
+      const tax = Number(department.tax || 0);
       return { name: department.name, value: tax };
     }).filter((department) => department.value > 0);
     return { breakdown, total: breakdown.reduce((sum, department) => sum + department.value, 0) };
@@ -285,9 +292,9 @@ export const DataProvider = ({ children }) => {
     <DataContext.Provider value={{
       currentUser: user, subscription: { plan: 'Pro', status: 'Active' }, stores,
       activeStoreId, setActiveStoreId, reportDateRange, setReportDateRange,
-      inventory, setInventory, salesLog, dailyHistory, setDailyHistory,
+      inventory: loadedStoreId === activeStoreId ? inventory : [], setInventory, salesLog: loadedStoreId === activeStoreId ? salesLog : [], dailyHistory, setDailyHistory,
       employees, setEmployees, vendors, setVendors, auditLogs, shrinkageLogs,
-      dataLoading, dataError, refreshStoreData, recordStoreSale, recordPhysicalCount, adjustInventoryStock,
+      dataLoading: dataLoading || (activeStoreId !== 'hq' && loadedStoreId !== activeStoreId), dataError, refreshStoreData, recordStoreSale, recordPhysicalCount, adjustInventoryStock,
       addAuditLog, calculateKPIs, getHQStats, deptSales,
       taxByDept, getSmartInsights, hourlyTrends,
       fuelTanks, setFuelTanks, fuelLogs, recordFuelSale: async () => {}, addFuelDelivery

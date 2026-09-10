@@ -130,6 +130,7 @@ router.post('/:id/stock', endpoint(async (req, res) => {
   const result = await operate(actorOf(req), keyOf(req), { action: 'stock', id, data }, async (tx, op) => {
     manager(op.actor); const item = await stockItem(tx, op.actor, id);
     const pack = item.catalog.packages.find(p => p.id === data.packageId); if (!pack) return fail('Select packaging for this product.');
+    if (data.expectedVersion !== undefined && data.expectedVersion !== item.version) fail('Stock changed since this form opened. Refresh before saving.', 409);
     const common = { inventoryId: id, packageId: pack.id, location: data.location, kind: data.kind, reason: data.reason };
     if (data.kind === 'COUNT') {
       if (data.expectedVersion === undefined || data.expectedVersion !== item.version) fail('Stock changed since the count began. Refresh and recount.', 409);
@@ -146,6 +147,7 @@ router.post('/:id/stock', endpoint(async (req, res) => {
       if (data.sellingPrice === undefined) fail('Package selling price is required.');
       await tx.stockBalance.upsert({ where: { inventoryId_packageId_location: { inventoryId: id, packageId: pack.id, location: data.location } },
         create: { inventoryId: id, packageId: pack.id, location: data.location, sellingPrice: data.sellingPrice }, update: { sellingPrice: data.sellingPrice } });
+      await tx.inventory.update({ where: { id }, data: { version: { increment: 1 }, ...(pack.unitsPerPackage === 1 ? { sellingPrice: data.sellingPrice } : {}) } });
     } else {
       if (data.quantity < 1 || !data.toLocation) fail('A positive quantity and destination location are required.');
       const target = data.kind === 'MOVE' ? pack : item.catalog.packages.find(p => p.id === data.toPackageId);

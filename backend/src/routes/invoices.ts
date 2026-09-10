@@ -5,11 +5,11 @@ import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { actorOf, emitStore, endpoint, keyOf } from '../utils/http';
 import { accessStore, fail, manager, operate, ownerFor } from '../services/operations';
-import { approveInvoice, extractInvoice, purchaseSchema } from '../services/invoices';
+import { approveInvoice, extractInvoice, manualPurchaseSchema, postPurchase, purchaseSchema, voidPurchase } from '../services/invoices';
 import { aiConfigured } from '../services/aiProvider';
 const router = Router(); router.use(requireAuth);
 const metadata = { id: true, ownerId: true, storeId: true, filename: true, mimeType: true, status: true, extraction: true, reviewDraft: true, error: true, createdAt: true, updatedAt: true,
-  purchase: { include: { lines: true, vendor: true } } } as const;
+  purchases: { include: { lines: true, vendor: true }, orderBy: { createdAt: 'desc' } } } as const;
 async function accessible(req: any, id: string) {
   const doc = await prisma.invoiceDocument.findUnique({ where: { id }, select: metadata });
   if (!doc || doc.ownerId !== await ownerFor(prisma, actorOf(req))) return fail('Invoice not found.',404);
@@ -36,11 +36,29 @@ router.post('/', endpoint(async (req, res) => {
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   const existing = await prisma.invoiceDocument.findUnique({ where: { ownerId_sha256: { ownerId, sha256 } }, select: metadata });
   if (existing) {
-    await accessStore(prisma, actorOf(req), existing.storeId);
-    return res.json({ ...existing, duplicate: true });
+    if (existing.storeId !== data.storeId) fail('This file is already registered for another store. Select that store to review it.',409);
+    return res.json({ ...existing, duplicate: true, extractionPerformed: false });
   }
-  const document = await prisma.invoiceDocument.create({ data: { ownerId, storeId: data.storeId, filename: data.filename.replace(/[^a-zA-Z0-9._ -]/g,'_'), mimeType: mimeType!, sha256, bytes, uploadedById: actorOf(req).id }, select: metadata });
-  res.status(201).json(document);
+  let document;
+  try { document = await prisma.invoiceDocument.create({ data: { ownerId, storeId: data.storeId, filename: data.filename.replace(/[^a-zA-Z0-9._ -]/g,'_'), mimeType: mimeType!, sha256, bytes, uploadedById: actorOf(req).id }, select: metadata }); } catch (error: any) {
+    if (error.code !== 'P2002') throw error;
+    const repeated = await prisma.invoiceDocument.findUniqueOrThrow({ where: { ownerId_sha256: { ownerId, sha256 } }, select: metadata });
+    if (repeated.storeId !== data.storeId) fail('This file is already registered for another store.',409);
+    return res.json({ ...repeated, duplicate: true, extractionPerformed: false });
+  }
+  res.status(201).json({ ...document, duplicate: false, extractionPerformed: false });
+}));
+router.post('/manual', endpoint(async (req, res) => {
+  const data = manualPurchaseSchema.parse(req.body);
+  const result = await operate(actorOf(req), keyOf(req), { action: 'manual-purchase', data }, (tx, op) =>
+    postPurchase(tx, op, data.storeId, { ...data, invoiceNumber: data.invoiceNumber || `MANUAL-${op.id}` }, { noReceiptReason: data.noReceiptReason }));
+  emitStore(req, result.storeId); res.status(201).json(result);
+}));
+router.post('/purchases/:id/void', endpoint(async (req, res) => {
+  const id = z.string().uuid().parse(req.params.id);
+  const { reason } = z.object({ reason: z.string().trim().min(5).max(500) }).parse(req.body);
+  const result = await operate(actorOf(req), keyOf(req), { action: 'void-purchase', id, reason }, (tx, op) => voidPurchase(tx, op, id, reason));
+  emitStore(req, result.storeId); res.json(result);
 }));
 router.get('/:id', endpoint(async (req, res) => res.json(await accessible(req, String(req.params.id)))));
 router.get('/:id/file', endpoint(async (req, res) => {
@@ -66,10 +84,11 @@ router.post('/:id/extract', endpoint(async (req, res) => {
 }));
 router.put('/:id/draft', endpoint(async (req, res) => {
   manager(actorOf(req)); const doc = await accessible(req, String(req.params.id));
+  const expectedUpdatedAt = z.iso.datetime().parse(req.body.expectedUpdatedAt);
   const draft = z.record(z.string(), z.unknown()).parse(req.body.draft);
   if (JSON.stringify(draft).length > 100000) fail('Invoice draft is too large.');
-  const changed = await prisma.invoiceDocument.updateMany({ where: { id: doc.id, status: { notIn: ['POSTED','PROCESSING'] } }, data: { reviewDraft: draft as any, status: 'REVIEW' } });
-  if (!changed.count) fail('This invoice is processing or already posted.',409); res.json(await accessible(req, doc.id));
+  const changed = await prisma.invoiceDocument.updateMany({ where: { id: doc.id, updatedAt: new Date(expectedUpdatedAt), status: { notIn: ['POSTED','PROCESSING'] } }, data: { reviewDraft: draft as any, status: 'REVIEW' } });
+  if (!changed.count) fail('This draft changed, is processing, or was posted. Reopen it before saving.',409); res.json(await accessible(req, doc.id));
 }));
 router.post('/:id/approve', endpoint(async (req, res) => {
   const id = String(req.params.id), data = purchaseSchema.parse(req.body);

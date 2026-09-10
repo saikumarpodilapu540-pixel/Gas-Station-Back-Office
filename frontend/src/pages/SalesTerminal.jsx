@@ -1,151 +1,43 @@
-import { useState } from 'react';
-import { CheckCircle2, Plus, Save, ShoppingCart, Trash2 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { useRef, useState } from 'react';
 import { useData } from '../context/DataContext';
-import { getDepartmentConfig } from '../utils/departments';
-
+import { saleOptions, quoteCart } from '../utils/saleQuote.mjs';
+const empty = () => ({ id: '', packageId: '', location: 'SHELF', qty: 1 });
+const money = value => `$${Number(value || 0).toFixed(2)}`;
 export default function SalesTerminal() {
-  const { inventory, recordStoreSale, activeStoreId, dataLoading } = useData();
-  const [cart, setCart] = useState([{ id: '', qty: 1 }]);
-  const [paymentType, setPaymentType] = useState('CASH');
-  const [message, setMessage] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const updateCartItem = (index, changes) => {
-    setCart((current) => current.map((item, itemIndex) => (
-      itemIndex === index ? { ...item, ...changes } : item
-    )));
-  };
-
-  const totals = cart.reduce((result, cartItem) => {
-    const product = inventory.find((item) => item.id === cartItem.id);
-    if (!product) return result;
-    const lineTotal = product.price * Number(cartItem.qty || 0);
-    const tax = lineTotal * (getDepartmentConfig(product.category).taxRate || 0);
-    return { subtotal: result.subtotal + lineTotal, tax: result.tax + tax };
-  }, { subtotal: 0, tax: 0 });
-
-  const submitSale = async (event) => {
-    event.preventDefault();
-    setMessage(null);
-
-    const items = cart.filter((item) => item.id && Number(item.qty) > 0);
-    if (!items.length) {
-      setMessage({ type: 'error', text: 'Add at least one product to the sale.' });
-      return;
-    }
-
-    const requestedByProduct = new Map();
-    for (const item of items) {
-      requestedByProduct.set(item.id, (requestedByProduct.get(item.id) || 0) + Number(item.qty));
-    }
-    const unavailable = Array.from(requestedByProduct).find(([id, quantity]) => (
-      quantity > (inventory.find((item) => item.id === id)?.stock || 0)
-    ));
-    if (unavailable) {
-      setMessage({ type: 'error', text: 'The requested quantity is greater than available stock.' });
-      return;
-    }
-
-    setSubmitting(true);
+  const data = useData();
+  if (!data.activeStoreId || data.activeStoreId === 'hq') return <div className="glass-panel p-8">Select a store to record a sale.</div>;
+  return <StoreTerminal key={data.activeStoreId} data={data} />;
+}
+function StoreTerminal({ data: { inventory, recordStoreSale, dataLoading } }) {
+  const [cart, setCart] = useState([empty()]), [paymentType, setPaymentType] = useState('CASH');
+  const [message, setMessage] = useState(''), [submitting, setSubmitting] = useState(false);
+  const request = useRef(null);
+  const totals = quoteCart(cart, inventory);
+  const update = (index, patch) => setCart(current => current.map((line,i) => i === index ? { ...line, ...patch } : line));
+  const submit = async event => {
+    event.preventDefault(); if (totals.error) return;
+    const fingerprint = JSON.stringify({ cart, paymentType });
+    if (request.current?.fingerprint !== fingerprint) request.current = { fingerprint, key: `sale-${crypto.randomUUID()}` };
+    setSubmitting(true); setMessage('');
     try {
-      await recordStoreSale(items, paymentType);
-      setMessage({ type: 'success', text: 'Sale recorded and inventory updated.' });
-      setCart([{ id: inventory[0]?.id || '', qty: 1 }]);
-    } catch (error) {
-      setMessage({ type: 'error', text: error.response?.data?.error || 'Unable to record sale.' });
-    } finally {
-      setSubmitting(false);
-    }
+      const sale = await recordStoreSale(cart, paymentType, request.current.key);
+      setCart([empty()]); request.current = null;
+      setMessage(`Sale recorded: ${money(sale.totalAmount)} including ${money(sale.taxAmount)} tax. Receipt ${sale.id}.`);
+    } catch (error) { setMessage(error.response?.data?.error || 'Could not confirm the sale. Retry the unchanged cart to check it safely.'); }
+    finally { setSubmitting(false); }
   };
-
-  if (!activeStoreId || activeStoreId === 'hq') {
-    return <div className="glass-panel p-8 text-slate-600">Select one store to record a sale.</div>;
-  }
-
-  return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">Sales Terminal</h2>
-        <p className="text-slate-500 mt-1">Sales are saved to PostgreSQL and stock is deducted in one transaction.</p>
-      </div>
-
-      {message && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className={`p-4 rounded-xl border ${
-          message.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'
-        }`}>
-          <div className="flex items-center gap-2">
-            {message.type === 'success' && <CheckCircle2 className="w-5 h-5" />}
-            <span className="font-medium">{message.text}</span>
-          </div>
-        </motion.div>
-      )}
-
-      <form onSubmit={submitSale} className="glass-panel p-6 space-y-5">
-        <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
-          <ShoppingCart className="w-6 h-6 text-primary" />
-          <h3 className="text-lg font-bold">C-Store Sale</h3>
-        </div>
-
-        {!dataLoading && inventory.length === 0 && (
-          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            Add inventory before recording a sale.
-          </p>
-        )}
-
-        {cart.map((cartItem, index) => (
-          <div key={index} className="grid grid-cols-1 md:grid-cols-[1fr_110px_44px] gap-3 items-end">
-            <label className="block text-sm font-semibold text-slate-700">
-              Product
-              <select value={cartItem.id} onChange={(event) => updateCartItem(index, { id: event.target.value })}
-                className="mt-1.5 w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
-                <option value="">Select a product</option>
-                {inventory.map((item) => (
-                  <option key={item.id} value={item.id}>{item.name} — {item.stock} available — ${item.price.toFixed(2)}</option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              Quantity
-              <input type="number" min="1" step="1" value={cartItem.qty}
-                onChange={(event) => updateCartItem(index, { qty: event.target.value })}
-                className="mt-1.5 w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5" />
-            </label>
-            <button type="button" aria-label="Remove item" disabled={cart.length === 1}
-              onClick={() => setCart((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-              className="h-11 rounded-xl border border-slate-200 text-rose-600 disabled:opacity-30 flex items-center justify-center">
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </div>
-        ))}
-
-        <button type="button" disabled={!inventory.length}
-          onClick={() => setCart((current) => [...current, { id: inventory[0]?.id || '', qty: 1 }])}
-          className="text-sm font-semibold text-primary flex items-center gap-1 disabled:opacity-40">
-          <Plus className="w-4 h-4" /> Add another item
-        </button>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-5 border-t border-slate-100">
-          <label className="text-sm font-semibold text-slate-700">
-            Payment type
-            <select value={paymentType} onChange={(event) => setPaymentType(event.target.value)}
-              className="mt-1.5 w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
-              {['CASH', 'CREDIT', 'DEBIT', 'EBT', 'OTHER'].map((type) => <option key={type}>{type}</option>)}
-            </select>
-          </label>
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-slate-500">Subtotal</span><strong>${totals.subtotal.toFixed(2)}</strong></div>
-            <div className="flex justify-between"><span className="text-slate-500">Estimated tax</span><strong>${totals.tax.toFixed(2)}</strong></div>
-            <div className="flex justify-between text-lg border-t border-dashed pt-2"><span>Total</span><strong>${(totals.subtotal + totals.tax).toFixed(2)}</strong></div>
-          </div>
-        </div>
-
-        <div className="flex justify-end">
-          <button type="submit" disabled={submitting || !inventory.length} className="btn-primary flex items-center gap-2 disabled:opacity-50">
-            <Save className="w-5 h-5" /> {submitting ? 'Recording…' : 'Ring Up Sale'}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
+  return <div className="max-w-5xl mx-auto space-y-6"><div><h2 className="text-2xl font-bold">Sales Terminal</h2><p className="text-slate-600 mt-1">Choose the package and location being sold. Reserved stock is unavailable.</p></div>
+    {message && <div role="status" className="bg-blue-50 border border-blue-200 rounded-lg p-4">{message}</div>}
+    <form onSubmit={submit} className="glass-panel p-6"><fieldset disabled={submitting || dataLoading} className="space-y-5">
+      {cart.map((line,index) => { const product = inventory.find(item => item.id === line.id); return <div key={index} className="grid md:grid-cols-[1fr_1fr_100px_70px] gap-3 items-end">
+        <label className="text-sm font-medium">Product<select required value={line.id} className="input w-full mt-1" onChange={event => update(index, { id: event.target.value, packageId: '' })}><option value="">Select product</option>{inventory.map(item => <option key={item.id} value={item.id}>{item.name} · {item.sku}</option>)}</select></label>
+        <label className="text-sm font-medium">Package & location<select required className="input w-full mt-1" value={line.packageId ? `${line.packageId}/${line.location}` : ''} onChange={event => { const [packageId, location] = event.target.value.split('/'); update(index, { packageId, location }); }}><option value="">Select available stock</option>{saleOptions(product).map(option => <option key={option.id} disabled={option.price === null} value={`${option.packageId}/${option.location}`}>{option.package.name} · {option.location} · {option.available} available · {option.price === null ? 'Set pack price in Inventory' : money(option.price)}</option>)}</select></label>
+        <label className="text-sm font-medium">Quantity<input required type="number" min="1" step="1" className="input w-full mt-1" value={line.qty} onChange={event => update(index, { qty: event.target.value })} /></label>
+        <button className="text-rose-700 py-2 disabled:opacity-40" disabled={cart.length === 1} type="button" onClick={() => setCart(current => current.filter((_,i) => i !== index))}>Remove</button>
+      </div>; })}
+      <button type="button" className="btn-secondary" disabled={cart.length >= 100} onClick={() => setCart(current => [...current, empty()])}>Add item</button>
+      {totals.error && <p className="text-amber-800">{totals.error}</p>}
+      <div className="grid sm:grid-cols-2 gap-4 border-t pt-4"><label className="text-sm font-medium">Payment<select className="input w-full mt-1" value={paymentType} onChange={e => setPaymentType(e.target.value)}>{['CASH','CREDIT','DEBIT','EBT','OTHER'].map(value => <option key={value}>{value}</option>)}</select></label><div><p>Subtotal: {money(totals.subtotal)}</p><p>Estimated tax using product rates: {money(totals.tax)}</p><p className="text-lg font-bold">Total: {money(totals.total)}</p></div></div>
+      <button type="submit" className="btn-primary" disabled={Boolean(totals.error) || !inventory.length}>{submitting ? 'Recording…' : 'Ring Up Sale'}</button>
+    </fieldset></form></div>;
 }

@@ -6,18 +6,22 @@ import { assistantService } from '../services/api';
 
 export default function AIAssistant() {
   const { activeStoreId } = useData();
+  return <StoreAssistant key={activeStoreId} activeStoreId={activeStoreId} />;
+}
+function StoreAssistant({ activeStoreId }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([{ id: 1, type: 'ai', text: 'Hi! Ask me about fuel sold, profit, low stock, packs and loose bottles, transfers, or outstanding checks.' }]);
   const [input, setInput] = useState(''); const [busy, setBusy] = useState(false); const endRef = useRef(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   const send = async (event) => {
     event?.preventDefault(); const message = input.trim(); if (!message || busy) return;
+    if (!activeStoreId || activeStoreId === 'hq') { setMessages(current => [...current, { id: Date.now(), type: 'ai', text: 'Select one store to ask about its records.' }]); return; }
     setInput(''); setMessages(current => [...current, { id: Date.now(), type: 'user', text: message }]); setBusy(true);
     try { const response = await assistantService.query(activeStoreId ? { message, storeId: activeStoreId } : { message }); setMessages(current => [...current, { id: Date.now() + 1, type: 'ai', text: response.data.answer }]); }
     catch (error) { setMessages(current => [...current, { id: Date.now() + 1, type: 'ai', text: error.response?.data?.error || 'I could not read the store data. Check the connection and try again.' }]); }
     finally { setBusy(false); }
   };
-  const suggestions = ['How much fuel sold today?', 'Show low stock items', 'How many Coke packs and bottles?', "Today's profit?"];
+  const suggestions = ['How much fuel sold today?', 'Show low stock items', 'Check invoice purchases', "Today's profit?"];
   return <>
     <button onClick={() => setIsOpen(true)} className={`fixed bottom-6 right-6 p-4 bg-slate-900 text-white rounded-full shadow-2xl z-50 ${isOpen ? 'hidden' : 'flex'} items-center justify-center`}><Sparkles className="w-6 h-6" /></button>
     <AnimatePresence>{isOpen && <motion.div initial={{ opacity: 0, y: 20, scale: .95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: .95 }} className="fixed bottom-6 right-6 w-[350px] sm:w-[400px] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col z-50 overflow-hidden" style={{ height: '600px', maxHeight: '85vh' }}>

@@ -145,6 +145,7 @@ router.put('/:id', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
       oldValue: `${existing.role}, ${existing.shift || 'No shift'}`,
       newValue: `${employee.role}, ${employee.shift || 'No shift'}`
     });
+    req.app.get('io')?.in(`user-${employee.id}`).disconnectSockets(true);
     res.json(toEmployeeView(employee));
   } catch (error: any) {
     const message = error?.code === 'P2002'
@@ -175,6 +176,7 @@ router.delete('/:id', requireRole(['OWNER', 'MANAGER']), async (req, res) => {
       oldValue: `${existing.role}, ${existing.shift || 'No shift'}`,
       newValue: null
     });
+    req.app.get('io')?.in(`user-${existing.id}`).disconnectSockets(true);
     res.json({ success: true });
   } catch (error: any) {
     res.status(409).json({ error: error?.code === 'P2003' ? 'Employee has related audit history and cannot be deleted.' : 'Failed to delete employee' });

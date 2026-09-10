@@ -19,13 +19,13 @@ import settlementRoutes from './routes/settlements';
 import invoiceRoutes from './routes/invoices';
 import expenseRoutes from './routes/expenses';
 import assistantRoutes from './routes/assistant';
+import { configureRealtime } from './services/realtime';
 import { errors } from './utils/http';
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' }
-});
+const allowedOrigins = process.env.FRONTEND_ORIGIN?.split(',').map(value => value.trim()) || ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:5174', 'http://127.0.0.1:5174'];
+const io = new Server(server, { cors: { origin: allowedOrigins } });
 
 const PORT = process.env.PORT || 5001;
 
@@ -50,18 +50,7 @@ app.use((req, res, next) => {
 // Inject io into req.app so routes can emit events
 app.set('io', io);
 
-io.on('connection', (socket) => {
-  console.log(`Client connected: ${socket.id}`);
-  
-  socket.on('join_store', (storeId) => {
-    socket.join(`store-${storeId}`);
-    console.log(`Client ${socket.id} joined store: ${storeId}`);
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`Client disconnected: ${socket.id}`);
-  });
-});
+configureRealtime(io);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

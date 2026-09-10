@@ -15,7 +15,7 @@ export async function createSale(tx: Tx, op: Operation, data: z.infer<typeof sal
   for (const [index, line] of data.items.entries()) {
     const item = await stockItem(tx, op.actor, line.productId);
     if (item.storeId !== data.storeId) fail('Sale item belongs to a different store.', 403);
-    const pack = item.catalog.packages.find(p => p.id === line.packageId) || item.catalog.packages.find(p => p.unitsPerPackage === 1); if (!pack) return fail('Select valid packaging.');
+    const pack = (line.packageId ? item.catalog.packages.find(p => p.id === line.packageId) : item.catalog.packages.find(p => p.unitsPerPackage === 1)); if (!pack) return fail('Select valid packaging.');
     const balance = item.balances.find(b => b.packageId === pack.id && b.location === line.location);
     const price = imported ? D(imported.prices[index]) : pack.unitsPerPackage === 1 ? item.sellingPrice : balance?.sellingPrice;
     if (price === null || price === undefined) fail(`Set a selling price for ${item.productName} / ${pack.name} first.`);

@@ -11,7 +11,9 @@
     "db:migrate:status": "prisma migrate status",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "test:integration": "node scripts/test-integration.cjs",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",

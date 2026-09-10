@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, CheckCircle2, Edit2, Eye, Filter, Package, Plus, Search, Trash2, XCircle } from 'lucide-react';
+import StockControls from '../components/StockControls';
 import { useData } from '../context/DataContext';
 import { inventoryService } from '../services/api';
 import { DEPARTMENTS, autoSuggestDepartment, getDepartmentConfig } from '../utils/departments';
@@ -16,7 +17,12 @@ const errorText = (error, fallback) => {
 };
 
 export default function Inventory() {
+  const { activeStoreId } = useData();
+  return <StoreInventory key={activeStoreId} />;
+}
+function StoreInventory() {
   const { activeStoreId, inventory, recordPhysicalCount, refreshStoreData } = useData();
+  const [stockItem, setStockItem] = useState(null);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [stockFilter, setStockFilter] = useState('All');
@@ -38,7 +44,7 @@ export default function Inventory() {
     return inventory.filter((item) => {
       const name = String(item.productName || item.name || '').toLowerCase();
       const sku = String(item.sku || '').toLowerCase();
-      const stock = Number(item.stockQuantity ?? item.stock ?? 0);
+      const stock = Number(item.availableQuantity ?? item.stockQuantity ?? item.stock ?? 0);
       const reorderLevel = Number(item.reorderLevel ?? item.lowStockAlert ?? 10);
       const matchesSearch = !query || name.includes(query) || sku.includes(query);
       const matchesCategory = categoryFilter === 'All' || item.category === categoryFilter;
@@ -86,8 +92,8 @@ export default function Inventory() {
       setFormMessage({ type: 'error', text: 'Product name and category are required.' });
       return;
     }
-    if (!Number.isFinite(payload.cost_price) || payload.cost_price <= 0 || !Number.isFinite(payload.selling_price) || payload.selling_price <= 0) {
-      setFormMessage({ type: 'error', text: 'Prices must be greater than zero.' });
+    if (!Number.isFinite(payload.cost_price) || payload.cost_price < 0 || !Number.isFinite(payload.selling_price) || payload.selling_price <= 0) {
+      setFormMessage({ type: 'error', text: 'Cost must be zero or more, and selling price must be greater than zero.' });
       return;
     }
     if (!Number.isInteger(payload.stock_quantity) || payload.stock_quantity < 0 || !Number.isInteger(payload.reorder_level) || payload.reorder_level < 0) {
@@ -112,12 +118,12 @@ export default function Inventory() {
   };
 
   const handleDelete = async (item) => {
-    if (!window.confirm(`Delete ${item.productName || item.name}? This cannot be undone.`)) return;
+    if (!window.confirm(`Archive ${item.productName || item.name}? Remaining stock and open transfers must be reconciled first.`)) return;
     try {
       await inventoryService.deleteItem(item.id);
       await refreshStoreData(activeStoreId);
     } catch (error) {
-      window.alert(errorText(error, 'Unable to delete product.'));
+      window.alert(errorText(error, 'Unable to archive product.'));
     }
   };
 
@@ -125,7 +131,7 @@ export default function Inventory() {
     event.preventDefault();
     if (!audit.id || audit.count === '' || Number(audit.count) < 0) return;
     try {
-      await recordPhysicalCount('inventory', audit.id, Number(audit.count), audit.packageId, audit.location);
+      await recordPhysicalCount('inventory', audit.id, Number(audit.count), audit.packageId, audit.location, audit.version);
       setShowAuditModal(false);
       setAudit({ id: '', packageId: '', count: '', location: 'BACKROOM' });
     } catch (error) {
@@ -144,7 +150,7 @@ export default function Inventory() {
           <p className="text-slate-500 font-medium mt-1">Track SKUs, margins, and stock alerts.</p>
         </div>
         <div className="flex gap-3">
-          <button onClick={() => { const item = inventory[0]; setAudit({ id: item?.id || '', packageId: item?.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1)?.id || item?.catalog?.packages?.[0]?.id || '', count: '', location: 'BACKROOM' }); setShowAuditModal(true); }} disabled={activeStoreId === 'hq' || !inventory.length} className="btn-secondary flex items-center gap-2 bg-white text-rose-600 border-rose-200 hover:bg-rose-50 disabled:opacity-50">
+          <button onClick={() => { const item = inventory[0]; setAudit({ id: item?.id || '', version: item?.version, packageId: item?.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1)?.id || item?.catalog?.packages?.[0]?.id || '', count: '', location: 'BACKROOM' }); setShowAuditModal(true); }} disabled={activeStoreId === 'hq' || !inventory.length} className="btn-secondary flex items-center gap-2 bg-white text-rose-600 border-rose-200 hover:bg-rose-50 disabled:opacity-50">
             <AlertTriangle className="w-4 h-4" /> Physical Count
           </button>
           <button onClick={openAdd} disabled={activeStoreId === 'hq'} className="btn-primary flex items-center gap-2 disabled:opacity-50">
@@ -192,7 +198,7 @@ export default function Inventory() {
                 const stock = displayedStock(item);
                 const reorder = Number(item.reorderLevel ?? item.lowStockAlert ?? 10);
                 const margin = price > 0 ? ((price - cost) / price * 100).toFixed(1) : '0.0';
-                const isLow = stock <= reorder;
+                const isLow = (item.availableQuantity ?? stock) <= reorder;
                 return <motion.tr initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.03 }} key={item.id} className="table-row group">
                   <td className="px-6 py-4 font-semibold text-slate-900"><div className="flex items-center gap-4"><div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200/60 flex items-center justify-center text-slate-500"><Package className="w-4 h-4" /></div>{item.productName || item.name}</div></td>
                   <td className="px-6 py-4 font-mono text-slate-500 text-xs">{item.sku}</td>
@@ -200,11 +206,12 @@ export default function Inventory() {
                   <td className="px-6 py-4 text-slate-500 font-medium text-right">${cost.toFixed(2)}</td>
                   <td className="px-6 py-4 font-semibold text-slate-900 text-right">${price.toFixed(2)}</td>
                   <td className="px-6 py-4 font-bold text-emerald-600 text-right">{margin}%</td>
-                  <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-2">{isLow && <AlertTriangle className="w-4 h-4 text-rose-500" />}<span className={`font-bold ${isLow ? 'text-rose-600' : 'text-slate-900'}`}>{stock}</span></div><div className="text-[11px] text-slate-400">{item.balances?.filter((balance) => balance.quantity > 0).map((balance) => `${balance.quantity} ${balance.package?.name || 'units'}`).join(' · ') || 'No package stock'}</div></td>
+                  <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-2">{isLow && <AlertTriangle className="w-4 h-4 text-rose-500" />}<span className={`font-bold ${isLow ? 'text-rose-600' : 'text-slate-900'}`}>{stock}</span></div><div className="text-xs text-slate-500">{item.availableQuantity ?? stock} available · {item.reservedQuantity || 0} reserved</div><div className="text-[11px] text-slate-400">{item.balances?.filter((balance) => balance.quantity > 0).map((balance) => `${balance.quantity} ${balance.package?.name || 'units'}`).join(' · ') || 'No package stock'}</div></td>
                   <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-1">
+                    <button aria-label={`Manage stock for ${item.productName || item.name}`} title="Manage stock & packages" onClick={() => setStockItem(item)} className="p-2 text-primary rounded-md"><Package className="w-4 h-4" /></button>
                     <button aria-label={`View ${item.productName || item.name}`} onClick={() => setViewItem(item)} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-md transition-colors"><Eye className="w-4 h-4" /></button>
                     <button aria-label={`Edit ${item.productName || item.name}`} onClick={() => openEdit(item)} disabled={activeStoreId === 'hq'} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-md transition-colors disabled:opacity-40"><Edit2 className="w-4 h-4" /></button>
-                    <button aria-label={`Delete ${item.productName || item.name}`} onClick={() => handleDelete(item)} disabled={activeStoreId === 'hq'} className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors disabled:opacity-40"><Trash2 className="w-4 h-4" /></button>
+                    <button aria-label={`Archive ${item.productName || item.name}`} onClick={() => handleDelete(item)} disabled={activeStoreId === 'hq'} className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors disabled:opacity-40"><Trash2 className="w-4 h-4" /></button>
                   </div></td>
                 </motion.tr>;
               })}
@@ -214,21 +221,23 @@ export default function Inventory() {
         </div>
       </div>
 
+      {stockItem && <StockControls initialItem={stockItem} onClose={() => setStockItem(null)} onRefresh={() => refreshStoreData(activeStoreId)} />}
       {formMode && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg shadow-2xl my-8">
         <div className="p-6 border-b border-slate-100 flex justify-between items-center"><div><h3 className="text-xl font-bold text-slate-900">{formMode === 'edit' ? 'Edit Product' : 'Add New Product'}</h3><p className="text-sm text-slate-500 mt-1">Changes are saved to PostgreSQL.</p></div><button onClick={() => setFormMode(null)} className="text-slate-400 hover:text-slate-600"><XCircle className="w-6 h-6" /></button></div>
         <form onSubmit={handleSave} className="p-6 space-y-5">
           {formMessage && <div className={`p-3 rounded-lg text-sm font-semibold border flex items-center gap-2 ${formMessage.type === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>{formMessage.type === 'error' ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}{formMessage.text}</div>}
           <label className="block text-sm font-semibold text-slate-700">Product Name<input required value={form.product_name} onChange={(event) => { const productName = event.target.value; const suggested = autoSuggestDepartment(productName); setForm((current) => ({ ...current, product_name: productName, ...(suggested && !current.manualCategoryOverride ? { category: suggested } : {}) })); }} className="mt-1.5 w-full input" /></label>
           <label className="block text-sm font-semibold text-slate-700">Category<select required value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value, manualCategoryOverride: true })} className="mt-1.5 w-full input"><option value="">Select Department...</option>{DEPARTMENTS.map((department) => <option key={department.id} value={department.name}>{department.name}</option>)}</select></label>
-          <div className="grid grid-cols-2 gap-4"><label className="block text-sm font-semibold text-slate-700">Cost Price<input required type="number" min="0.01" step="0.01" value={form.cost_price} onChange={(event) => setForm({ ...form, cost_price: event.target.value })} className="mt-1.5 w-full input" /></label><label className="block text-sm font-semibold text-slate-700">Selling Price<input required type="number" min="0.01" step="0.01" value={form.selling_price} onChange={(event) => setForm({ ...form, selling_price: event.target.value })} className="mt-1.5 w-full input" /></label></div>
-          <div className="grid grid-cols-2 gap-4"><label className="block text-sm font-semibold text-slate-700">Stock Quantity<input required type="number" min="0" step="1" value={form.stock_quantity} onChange={(event) => setForm({ ...form, stock_quantity: event.target.value })} className="mt-1.5 w-full input" /></label><label className="block text-sm font-semibold text-slate-700">Low-stock alert at<input required type="number" min="0" step="1" value={form.reorder_level} onChange={(event) => setForm({ ...form, reorder_level: event.target.value })} className="mt-1.5 w-full input" /></label></div>
+          <div className="grid grid-cols-2 gap-4"><label className="block text-sm font-semibold text-slate-700">Cost Price<input required type="number" min="0" step="0.000001" readOnly={formMode === 'edit' && Number(form.stock_quantity) > 0} value={form.cost_price} onChange={(event) => setForm({ ...form, cost_price: event.target.value })} className="mt-1.5 w-full input" /></label><label className="block text-sm font-semibold text-slate-700">Selling Price<input required type="number" min="0.01" step="0.01" value={form.selling_price} onChange={(event) => setForm({ ...form, selling_price: event.target.value })} className="mt-1.5 w-full input" /></label></div>
+          <div className="grid grid-cols-2 gap-4"><label className="block text-sm font-semibold text-slate-700">Stock Quantity<input required type="number" min="0" step="1" readOnly={formMode === 'edit'} value={form.stock_quantity} onChange={(event) => setForm({ ...form, stock_quantity: event.target.value })} className="mt-1.5 w-full input" /></label><label className="block text-sm font-semibold text-slate-700">Low-stock alert at<input required type="number" min="0" step="1" value={form.reorder_level} onChange={(event) => setForm({ ...form, reorder_level: event.target.value })} className="mt-1.5 w-full input" /></label></div>
+          {formMode === 'edit' && <p className="text-sm text-slate-600">Stock is read only here. Use stock & packages to count or move it. Cost of stock on hand is calculated from purchase receipts.</p>}
           <div className="flex gap-3 pt-4 border-t border-slate-100"><button type="button" onClick={() => setFormMode(null)} className="flex-1 btn-secondary">Cancel</button><button type="submit" disabled={loading} className="flex-1 btn-primary">{loading ? 'Saving...' : 'Save Product'}</button></div>
         </form>
       </div></div>}
 
       {viewItem && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-slate-100 flex justify-between items-center"><h3 className="text-xl font-bold text-slate-900">Product Details</h3><button onClick={() => setViewItem(null)} className="text-slate-400"><XCircle className="w-6 h-6" /></button></div><div className="p-6 space-y-4 text-sm"><div><p className="text-xs uppercase font-bold text-slate-400">Product</p><p className="text-lg font-bold text-slate-900">{viewItem.productName || viewItem.name}</p></div><div className="grid grid-cols-2 gap-4"><div><p className="text-xs uppercase font-bold text-slate-400">SKU</p><p className="font-mono text-slate-700">{viewItem.sku}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Category</p><p className="text-slate-700">{viewItem.category}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Cost</p><p className="text-slate-700">${Number(viewItem.costPrice ?? viewItem.cost ?? 0).toFixed(2)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Selling Price</p><p className="text-slate-700">${Number(viewItem.sellingPrice ?? viewItem.price ?? 0).toFixed(2)}</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Stock</p><p className="font-bold text-slate-900">{displayedStock(viewItem)} base units</p></div><div><p className="text-xs uppercase font-bold text-slate-400">Reorder Level</p><p className="text-slate-700">{viewItem.reorderLevel ?? viewItem.lowStockAlert ?? 10}</p></div></div><div className="border-t border-slate-100 pt-4"><p className="text-xs uppercase font-bold text-slate-400 mb-2">Package balances</p><div className="space-y-1">{(viewItem.catalog?.packages || []).map((pack) => <div key={pack.id} className="flex justify-between text-slate-600"><span>{pack.name} ({pack.unitsPerPackage} units)</span><span className="font-semibold">{packageStock(viewItem, pack.id, 'BACKROOM')} backroom · {packageStock(viewItem, pack.id, 'SHELF')} shelf</span></div>)}</div></div><button onClick={() => { setViewItem(null); openEdit(viewItem); }} disabled={activeStoreId === 'hq'} className="w-full btn-primary disabled:opacity-50">Edit Product</button></div></div></div>}
 
-      {showAuditModal && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-rose-100 bg-rose-50/30"><h3 className="text-xl font-bold text-rose-900">Inventory Reconciliation</h3><p className="text-sm text-rose-600/80 mt-1">Count one package type and location at a time.</p></div><form onSubmit={handleAuditSubmit} className="p-6 space-y-5"><label className="block text-sm font-semibold text-slate-700">Select Product<select required value={audit.id} onChange={(event) => { const item = inventory.find((entry) => entry.id === event.target.value); setAudit({ ...audit, id: event.target.value, packageId: item?.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1)?.id || item?.catalog?.packages?.[0]?.id || '' }); }} className="mt-1.5 w-full input">{inventory.map((item) => <option key={item.id} value={item.id}>{item.productName || item.name} ({displayedStock(item)} base units)</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Package<select required value={audit.packageId} onChange={(event) => setAudit({ ...audit, packageId: event.target.value })} className="mt-1.5 w-full input">{(inventory.find((item) => item.id === audit.id)?.catalog?.packages || []).map((pack) => <option key={pack.id} value={pack.id}>{pack.name} ({pack.unitsPerPackage} units)</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Location<select value={audit.location} onChange={(event) => setAudit({ ...audit, location: event.target.value })} className="mt-1.5 w-full input"><option value="BACKROOM">Backroom</option><option value="SHELF">Shelf</option></select></label><label className="block text-sm font-semibold text-slate-700">Actual package count<input required min="0" type="number" value={audit.count} onChange={(event) => setAudit({ ...audit, count: event.target.value })} className="mt-1.5 w-full input" /></label><div className="flex gap-3 pt-4"><button type="button" onClick={() => setShowAuditModal(false)} className="flex-1 btn-secondary">Cancel</button><button type="submit" className="flex-1 btn-primary bg-rose-600 hover:bg-rose-700">Save Count</button></div></form></div></div>}
+      {showAuditModal && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl"><div className="p-6 border-b border-rose-100 bg-rose-50/30"><h3 className="text-xl font-bold text-rose-900">Inventory Reconciliation</h3><p className="text-sm text-rose-600/80 mt-1">Count one package type and location at a time.</p></div><form onSubmit={handleAuditSubmit} className="p-6 space-y-5"><label className="block text-sm font-semibold text-slate-700">Select Product<select required value={audit.id} onChange={(event) => { const item = inventory.find((entry) => entry.id === event.target.value); setAudit({ ...audit, id: event.target.value, version: item?.version, packageId: item?.catalog?.packages?.find((pack) => pack.unitsPerPackage === 1)?.id || item?.catalog?.packages?.[0]?.id || '' }); }} className="mt-1.5 w-full input">{inventory.map((item) => <option key={item.id} value={item.id}>{item.productName || item.name} ({displayedStock(item)} base units)</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Package<select required value={audit.packageId} onChange={(event) => setAudit({ ...audit, packageId: event.target.value })} className="mt-1.5 w-full input">{(inventory.find((item) => item.id === audit.id)?.catalog?.packages || []).map((pack) => <option key={pack.id} value={pack.id}>{pack.name} ({pack.unitsPerPackage} units)</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Location<select value={audit.location} onChange={(event) => setAudit({ ...audit, location: event.target.value })} className="mt-1.5 w-full input"><option value="BACKROOM">Backroom</option><option value="SHELF">Shelf</option></select></label><label className="block text-sm font-semibold text-slate-700">Actual package count<input required min="0" type="number" value={audit.count} onChange={(event) => setAudit({ ...audit, count: event.target.value })} className="mt-1.5 w-full input" /></label><div className="flex gap-3 pt-4"><button type="button" onClick={() => setShowAuditModal(false)} className="flex-1 btn-secondary">Cancel</button><button type="submit" className="flex-1 btn-primary bg-rose-600 hover:bg-rose-700">Save Count</button></div></form></div></div>}
     </div>
   );
 }
